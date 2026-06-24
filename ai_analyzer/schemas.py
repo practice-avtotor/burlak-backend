@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 
+LLM_MODEL = "qwen2.5:7B"
 
 ########################################################
 
