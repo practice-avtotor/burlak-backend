@@ -28,6 +28,7 @@ class ColumnMapping(BaseModel):
 class ConfigColumn(ColumnMapping):
     type: str = Field(description="Тип конфигурационного параметра (например, 'color', 'option')")
 
+
 class BomColumns(BaseModel):
     part_no: ColumnMapping = Field(description="Колонка номера детали (part number)")
     qty: ColumnMapping = Field(description="Колонка количества (quantity)")
@@ -35,9 +36,11 @@ class BomColumns(BaseModel):
     name_en: ColumnMapping | None = Field(None, description="Колонка с английским наименованием, если есть")
     config_columns: list[ConfigColumn] = Field(default=[], description="Список дополнительных колонок конфигурации")
 
+
 class BomLayout(BaseModel):
     has_merged_cells: bool = Field(description="Флаг наличия объединенных ячеек в шапке")
     header_alignment: Literal["horizontal", "vertical", "mixed"] = Field(description="Ориентация шапки таблицы")
+
 
 class BomSheet(BaseModel):
     sheet_name: str = Field(description="Имя листа в Excel-файле")
@@ -87,6 +90,7 @@ class ClassificationPattern(BaseModel):
     type: Literal["filename_regex", "filename_keyword", "sheet_keyword"] = Field(description="Тип правила классификации")
     pattern: str | None = Field(None, description="Регулярное выражение (если type='filename_regex')")
     keywords: list[str] | None = Field(None, description="Список ключевых слов (для keyword-типов)")
+
 
 class FileClassificationRules(BaseModel):
     operational_card_patterns: list[ClassificationPattern] = Field(description="Паттерны для определения операционных карт")
