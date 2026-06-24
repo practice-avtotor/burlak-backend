@@ -60,14 +60,47 @@ class BomAnalysisResult(BaseModel):
 
 """ Операционные карты: анализ """
 
+class TableBoundaries(BaseModel):
+    type: Literal["end_markers", "empty_rows", "next_header", "fixed_count"] = Field(description="Как определять границы таблицы")
+    markers: list[str] | None = Field(None, description="Список слов-маркеров (например, 'Итого', 'Проверил') для конца таблицы")
+    empty_rows_threshold: int | None = Field(None, description="Порог пустых строк для завершения парсинга")
+    fixed_count: int | None = Field(None, description="Жесткое количество строк (если есть)")
+
+
+class CardColumns(BaseModel):
+    part_no: ColumnMapping
+    name_cn: ColumnMapping
+    name_en: ColumnMapping | None = None
+    qty: ColumnMapping
+
+
+class CardSheetMapping(BaseModel):
+    sheet_name: str | None = Field(description="Имя листа. null, если правило применимо ко всем листам")
+    sheet_type: Literal["card_data", "service", "unknown"] = Field(description="Тип содержимого на листе")
+    header_rows: list[int] = Field(description="Строки заголовков (1-based)")
+    data_start_row: int = Field(description="Строка начала данных")
+    columns: CardColumns
+    table_boundaries: TableBoundaries
+
+
+class ClassificationPattern(BaseModel):
+    type: Literal["filename_regex", "filename_keyword", "sheet_keyword"] = Field(description="Тип правила классификации")
+    pattern: str | None = Field(None, description="Регулярное выражение (если type='filename_regex')")
+    keywords: list[str] | None = Field(None, description="Список ключевых слов (для keyword-типов)")
+
+class FileClassificationRules(BaseModel):
+    operational_card_patterns: list[ClassificationPattern] = Field(description="Паттерны для определения операционных карт")
+    service_file_patterns: list[ClassificationPattern] = Field(description="Паттерны для определения служебных файлов (обложки, оглавления)")
+
+
 class CardAnalysisResult(BaseModel):
-    structure_type: str
-    description: str
-    card_number_source: str
-    card_number_pattern: str
-    card_number_confidence: float
-    sheets: list[dict]
-    file_classification_rules: dict
+    structure_type: Literal["standard_table", "graphic_number", "inspection", "unknown"] = Field(description="Базовый тип структуры карты")
+    description: str = Field(description="Человекочитаемое описание структуры")
+    card_number_source: Literal["filename", "sheet_content", "header", "cell"] = Field(description="Откуда парсеру брать номер карты")
+    card_number_pattern: str = Field(description="Паттерн для извлечения номера карты (Regex)")
+    card_number_confidence: float = Field(description="Уверенность в способе извлечения номера")
+    sheets: list[CardSheetMapping] = Field(description="Описание маппинга для листов карты")
+    file_classification_rules: FileClassificationRules = Field(description="Правила классификации файлов в ZIP-архиве")
 
 ########################################################
 
