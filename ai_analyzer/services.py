@@ -1,8 +1,59 @@
 import json
-
+import pydantic
+import openai
 from llm.client import client
 from llm.prompts import BOM_SYSTEM_PROMPT, CARD_SYSTEM_PROMPT, MAPPING_SYSTEM_PROMPT
 from schemas import LLM_MODEL, BomAnalysisResult, CardAnalysisResult, MappingResult
+
+
+class LLMAnalysisError(Exception):
+    """
+    Обработка ошибок парсинга LLM
+    """
+
+    def __init__(self, code: str, message: str, details: dict = None):
+        self.code = code
+        self.message = message
+        self.details = details or {}
+        super().__init__(self.message)
+
+
+async def safe_parse(model: str, messages: list, response_format):
+    try:
+        response = client.beta.chat.completions.parse(
+            model=model,
+            messages=messages,
+            response_format=response_format
+        )
+        return response.choices[0].message.parsed
+
+    except pydantic.ValidationError as e:
+        # Модель вернула JSON, но он не соответствует Pydantic-схеме
+        raise LLMAnalysisError(
+            code="INVALID_MODEL_OUTPUT",
+            message="LLM вернула данные, не соответствующие Pydantic-схеме",
+            details={"validation_errors": e.errors()}
+        )
+    except openai.LengthFinishReasonError:
+        # Модели не хватило max_tokens, чтобы закрыть JSON
+        raise LLMAnalysisError(
+            code="INCOMPLETE_OUTPUT",
+            message="LLM не хватило токенов для завершения структуры",
+        )
+    except openai.APIError as e:
+        # Проблемы с доступом к Ollama (упал сервис, таймаут)
+        raise LLMAnalysisError(
+            code="LLM_API_ERROR",
+            message="Ошибка соединения с LLM",
+            details={"error": str(e)}
+        )
+    except Exception as e:
+        # Любые другие непредвиденные сбои
+        raise LLMAnalysisError(
+            code="INTERNAL_ERROR",
+            message="Неизвестная ошибка при анализе",
+            details={"error": str(e)}
+        )
 
 
 class BomAnalyzer:
@@ -13,28 +64,22 @@ class BomAnalyzer:
 
     async def analyze(self, bom_snapshot: dict) -> BomAnalysisResult:
 
-        # Обращаемся к механизму Structured Outputs
-        response = client.beta.chat.completions.parse(
-            model=self.MODEL,
-            # Контекст беседы с нейросетью
-            messages=[
-                {
-                    "role": "system",
-                    "content": BOM_SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        bom_snapshot,
-                        ensure_ascii=False
-                    )
-                }
-            ],
-            # Передаем Pydantic класс
-            response_format=BomAnalysisResult
-        )
+        # Контекст беседы с нейросетью
+        messages=[
+            {
+                "role": "system",
+                "content": BOM_SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    bom_snapshot,
+                    ensure_ascii=False
+                )
+            }
+        ]
 
-        return response.choices[0].message.parsed
+        return await safe_parse(self.MODEL, messages, BomAnalysisResult)
 
 
 class CardsAnalyzer:
@@ -45,28 +90,22 @@ class CardsAnalyzer:
 
     async def analyze(self, cards: list[dict]) -> CardAnalysisResult:
 
-        # Обращаемся к механизму Structured Outputs
-        response = client.beta.chat.completions.parse(
-            model=self.MODEL,
-            # Контекст беседы с нейросетью
-            messages=[
-                {
-                    "role": "system",
-                    "content": CARD_SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        cards,
-                        ensure_ascii=False
-                    )
-                }
-            ],
-            # Передаем Pydantic класс
-            response_format=CardAnalysisResult
-        )
+        # Контекст беседы с нейросетью
+        messages=[
+            {
+                "role": "system",
+                "content": CARD_SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    cards,
+                    ensure_ascii=False
+                )
+            }
+        ]
 
-        return response.choices[0].message.parsed
+        return await safe_parse(self.MODEL, messages, CardAnalysisResult)
 
 
 class MappingBuilder:
@@ -84,25 +123,19 @@ class MappingBuilder:
             "cards": card_analysis.model_dump()
         }
 
-        # Обращаемся к механизму Structured Outputs
-        response = client.beta.chat.completions.parse(
-            model=self.MODEL,
-            # Контекст беседы с нейросетью
-            messages=[
-                {
-                    "role": "system",
-                    "content": MAPPING_SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        payload,
-                        ensure_ascii=False
-                    )
-                }
-            ],
-            # Передаем Pydantic класс
-            response_format=MappingResult
-        )
+        # Контекст беседы с нейросетью
+        messages=[
+            {
+                "role": "system",
+                "content": MAPPING_SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    payload,
+                    ensure_ascii=False
+                )
+            }
+        ]
 
-        return response.choices[0].message.parsed
+        return await safe_parse(self.MODEL, messages, MappingResult)
