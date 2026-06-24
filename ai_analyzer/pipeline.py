@@ -1,5 +1,6 @@
 import time
 from services import BomAnalyzer, CardsAnalyzer, MappingBuilder
+from schemas import LLM_MODEL
 
 
 class StructurePipeline:
@@ -21,22 +22,18 @@ class StructurePipeline:
         card_result = await self.cards.analyze(cards)
         mapping_result = await self.mapping.build(bom_result, card_result)
 
-        # Собираем итоговый ответ 
+        # Собираем итоговый ответ
         return {
-            "bom": bom_result.model_dump(),
-            "cards": card_result.model_dump(),
-            "mapping": {
-                "bom_to_card":
-                    mapping_result.model_dump()
-            },
-            "metadata": {
-                "analyzer_version": "1.0.0",
-                "processing_time_ms":
-                    int(
-                        (time.time() - started)
-                        * 1000
-                    ),
-                "model": "qwen2.5:14b",
-                "warnings": []
+            "status": "success",
+            "mapping_config": {
+                "bom": bom_result.model_dump(),
+                "cards": card_result.model_dump(),
+                "mapping": mapping_result.model_dump(),
+                "metadata": {
+                    "analyzer_version": "1.0.0",
+                    "processing_time_ms": int((time.time() - started) * 1000),
+                    "model": LLM_MODEL,
+                    "warnings": []
+                }
             }
         }
