@@ -111,14 +111,21 @@ class CardAnalysisResult(BaseModel):
 """ Маппинг"""
 
 class FieldMapping(BaseModel):
-    bom_column: str
-    card_column: str
-    match_type: str
-    confidence: float
+    bom_column: str = Field(description="Ключ колонки из структуры BOM (например, 'part_no')")
+    card_column: str = Field(description="Ключ колонки из структуры карты (например, 'part_no')")
+    match_type: Literal["exact", "fuzzy", "regex"] = Field(description="Тип алгоритма сопоставления")
+    confidence: float = Field(description="Оценка уверенности от 0.0 до 1.0")
+
+
+class BomToCardMapping(BaseModel):
+    part_no: FieldMapping = Field(description="Маппинг для номера детали")
+    name_cn: FieldMapping = Field(description="Маппинг для наименования (китайский/основной)")
+    name_en: FieldMapping | None = Field(None, description="Маппинг для наименования (английский), если применимо")
+    qty: FieldMapping = Field(description="Маппинг для количества")
 
 
 class MappingResult(BaseModel):
-    bom_to_card: dict[str, FieldMapping]
+    bom_to_card: BomToCardMapping = Field(description="Итоговый маппинг полей BOM на поля операционной карты")
 
 ########################################################
 
