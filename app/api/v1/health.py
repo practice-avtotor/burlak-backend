@@ -1,56 +1,62 @@
-import os
+from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import aiosqlite
-import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
+from app.core.redis import check_redis_health
 from app.db.database import get_async_db
-from app.schemas.health import HealthChecks, HealthResponse
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-async def health_check(
-    response: Response, db: aiosqlite.Connection = Depends(get_async_db)
-) -> HealthResponse:
+async def health_check() -> JSONResponse:
     """System health check endpoint.
 
-    Returns 200 OK with status information.
-    Optionally checks SQLite and Redis connectivity.
+    Returns 200 OK with nested checks format when all healthy.
+    Returns 503 Service Unavailable when any check fails.
     """
     settings = get_settings()
-    try:
-        await db.execute("SELECT 1")
-        db_status = "ok"
-    except Exception as e:
-        db_status = f"failed: {e}"
-    try:
-        client = aioredis.from_url(settings.redis_url, socket_timeout=2.0)
-        async with client:
-            await client.ping()
-        redis_status = "ok"
-    except Exception as e:
-        redis_status = f"failed: {e}"
-    try:
-        os.makedirs(settings.storage_path, exist_ok=True)
-        temp_file_path = os.path.join(settings.storage_path, ".health_check_temp")
-        with open(temp_file_path, "w") as f:
-            f.write("helthcheck_ok")
-        os.remove(temp_file_path)
-        storage_status = "ok"
-    except Exception as e:
-        storage_status = f"failed: {e}"
+    checks: dict[str, str] = {}
 
-    is_healthy = db_status == "ok" and redis_status == "ok" and storage_status == "ok"
-    if not is_healthy:
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return HealthResponse(
-        status="healthy" if is_healthy else "unhealthy",
-        checks=HealthChecks(
-            database=db_status,
-            redis=redis_status,
-            storage=storage_status,
-        ),
+    # Redis check
+    redis_health = await check_redis_health()
+    if redis_health.get("redis") == "healthy":
+        checks["redis"] = "ok"
+    else:
+        checks["redis"] = f"failed: {redis_health.get('error', 'unknown')}"
+
+    # SQLite check
+    try:
+        db_gen: AsyncGenerator[aiosqlite.Connection, None] = get_async_db()
+        db = await db_gen.__anext__()
+        try:
+            await db.execute("SELECT 1")
+        finally:
+            try:
+                await db_gen.__anext__()
+            except StopAsyncIteration:
+                pass
+        checks["database"] = "ok"
+    except Exception as exc:
+        checks["database"] = f"failed: {exc}"
+
+    # Storage check
+    storage_path = Path(settings.storage_path)
+    if storage_path.exists() and storage_path.is_dir():
+        checks["storage"] = "ok"
+    else:
+        checks["storage"] = "failed: path not accessible"
+
+    # Determine overall status
+    all_ok = all(v == "ok" for v in checks.values())
+    status = "healthy" if all_ok else "unhealthy"
+    status_code = 200 if all_ok else 503
+
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": status, "checks": checks},
     )

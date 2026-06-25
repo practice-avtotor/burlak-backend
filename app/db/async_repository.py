@@ -1,3 +1,9 @@
+"""Async SQLite repository for FastAPI endpoints.
+
+Uses aiosqlite for non-blocking DB access. Never call this from
+Celery tasks — use sync_repository.py instead.
+"""
+
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -30,28 +36,10 @@ async def get_job(db: aiosqlite.Connection, job_id: int) -> dict[str, Any] | Non
             data = dict(row)
             if data.get("mapping_config"):
                 data["mapping_config"] = json.loads(data["mapping_config"])
-            # Convert boolean integer values to actual booleans
             data["bom_uploaded"] = bool(data["bom_uploaded"])
             data["archive_uploaded"] = bool(data["archive_uploaded"])
             return data
         return None
-
-
-async def try_start_processing(db: aiosqlite.Connection, job_id: int) -> bool:
-    """Atomically change status to 'processing' if all conditions are met.
-    Returns Ture if status has changed.
-    """
-    now = datetime.now(UTC).isoformat()
-    async with db.execute(
-        """
-        UPDATE jobs
-        SET status = 'processing', stage = 'unpacking', updated_at = ?
-        WHERE id = ? AND status = 'awaiting_upload' AND bom_uploaded = 1 AND archive_uploaded = 1
-        """,
-        (now, job_id),
-    ) as cursor:
-        await db.commit()
-        return cursor.rowcount > 0
 
 
 async def update_job_status(

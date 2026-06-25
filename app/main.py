@@ -1,7 +1,7 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.api.v1.router import router as v1_router
@@ -12,9 +12,13 @@ from app.schemas.job import ErrorDetail, ErrorResponse
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown events."""
-    # Startup: nothing to initialize yet
+    from app.core.redis import close_redis, get_redis
+
+    # Startup: initialize Redis connection pool
+    await get_redis()
     yield
-    # Shutdown: cleanup if needed
+    # Shutdown: close Redis connections
+    await close_redis()
 
 
 app = FastAPI(
@@ -26,7 +30,7 @@ app = FastAPI(
 
 
 @app.exception_handler(BurlakError)
-async def burlak_error_handler(request: Request, exc: BurlakError) -> JSONResponse:
+async def burlak_error_handler(request: object, exc: BurlakError) -> JSONResponse:
     """Global exception handler for all BurlakError subclasses.
 
     Returns uniform error response format:

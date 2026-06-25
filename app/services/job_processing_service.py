@@ -1,43 +1,66 @@
 import aiosqlite
 
 from app.core.exceptions import JobNotFoundError, JobStateError
-from app.db.async_repository import get_job, try_start_processing
+from app.db.async_repository import get_job, update_job_status
+from app.services.cache_service import invalidate_job_cache
 
 
 class JobProcessingService:
     """Coordinates the job processing lifecycle.
 
-    Responsibilities are split into two phases:
-    1. transition_to_processing — atomically validate and persist the new state
-    2. dispatch_processing      — trigger asynchronous processing task
+    Responsibilities are split into three distinct phases:
+    1. validate_can_start  — check preconditions (SRP: validation only)
+    2. transition_to_processing — persist the new state (SRP: mutation only)
+    3. dispatch_processing  — trigger async work (SRP: side-effect only)
     """
+
+    @staticmethod
+    async def validate_can_start(
+        db: aiosqlite.Connection,
+        job_id: int,
+    ) -> None:
+        """Validate that a job is ready to start processing.
+
+        Checks:
+        - Job exists
+        - Job is in 'awaiting_upload' status
+        - Both BOM and archive files have been uploaded
+
+        Raises:
+            JobNotFoundError: Job does not exist.
+            JobStateError: Job is not in the correct state or files are missing.
+        """
+        job = await get_job(db, job_id)
+        if job is None:
+            raise JobNotFoundError(f"Job {job_id} not found")
+
+        if job["status"] != "awaiting_upload":
+            raise JobStateError(
+                f"Job {job_id} is in status '{job['status']}', "
+                f"expected 'awaiting_upload'"
+            )
+
+        if not job["bom_uploaded"]:
+            raise JobStateError(f"Job {job_id}: BOM file not uploaded yet")
+
+        if not job["archive_uploaded"]:
+            raise JobStateError(f"Job {job_id}: Archive file not uploaded yet")
 
     @staticmethod
     async def transition_to_processing(
         db: aiosqlite.Connection,
         job_id: int,
     ) -> dict[str, str]:
-        """Atomically validate preconditions and transition job status to 'processing'.
+        """Persist the status transition to 'processing' with stage 'unpacking'.
 
-        If preconditions are not met, raises corresponding error (404 or 409).
+        This is a pure state-mutation operation with no validation or side effects.
+        Invalidates the job status cache after mutation.
 
         Returns:
-            The new status and stage written to the database.
+            The actual status and stage written to the database.
         """
-        success = await try_start_processing(db, job_id)
-        if not success:
-            job = await get_job(db, job_id)
-            if job is None:
-                raise JobNotFoundError(f"Job {job_id} not found")
-            if job["status"] != "awaiting_upload":
-                raise JobStateError(
-                    f"Job {job_id} is in status '{job['status']}', expected 'awaiting_upload'"
-                )
-            if not job["bom_uploaded"] or not job["archive_uploaded"]:
-                raise JobStateError(
-                    f"Job {job_id} cannot be started: BOM and archive must be fully uploaded"
-                )
-            raise JobStateError(f"Job {job_id} cannot be started")
+        await update_job_status(db, job_id, "processing", "unpacking")
+        await invalidate_job_cache(job_id)
         return {"status": "processing", "stage": "unpacking"}
 
     @staticmethod
@@ -45,8 +68,9 @@ class JobProcessingService:
         """Trigger the Celery unpack task asynchronously.
 
         This is intentionally a sync method — it only enqueues work
-        without awaiting the result.
+        without awaiting the result. The task is sent to Redis via
+        Celery broker (LPUSH), and workers pull it (BRPOP).
         """
-        # TODO: Trigger Celery task unpack.delay(job_id)
-        # from app.worker.tasks.unpack import unpack
-        # unpack.delay(job_id)
+        from app.worker.tasks.unpack import unpack
+
+        unpack.delay(job_id)

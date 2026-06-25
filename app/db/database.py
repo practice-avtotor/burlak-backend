@@ -40,6 +40,7 @@ async def get_async_db() -> AsyncGenerator[aiosqlite.Connection, None]:
         db_path = db_path[len("sqlite:///") :]
     db = await aiosqlite.connect(db_path)
     db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA journal_mode=WAL")
     try:
         yield db
     finally:
