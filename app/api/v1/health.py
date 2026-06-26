@@ -1,10 +1,10 @@
 import os
 
 import aiosqlite
-import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Response, status
 
 from app.core.config import get_settings
+from app.core.redis import check_redis_health
 from app.db.database import get_async_db
 from app.schemas.health import HealthChecks, HealthResponse
 
@@ -18,7 +18,7 @@ async def health_check(
     """System health check endpoint.
 
     Returns 200 OK with status information.
-    Optionally checks SQLite and Redis connectivity.
+    Checks SQLite, Redis, and storage connectivity.
     """
     settings = get_settings()
     try:
@@ -27,17 +27,19 @@ async def health_check(
     except Exception as e:
         db_status = f"failed: {e}"
     try:
-        client = aioredis.from_url(settings.redis_url, socket_timeout=2.0)
-        async with client:
-            await client.ping()
-        redis_status = "ok"
+        redis_result = await check_redis_health()
+        redis_status = (
+            "ok"
+            if redis_result["redis"] == "healthy"
+            else f"failed: {redis_result.get('error', 'unknown')}"
+        )
     except Exception as e:
         redis_status = f"failed: {e}"
     try:
         os.makedirs(settings.storage_path, exist_ok=True)
         temp_file_path = os.path.join(settings.storage_path, ".health_check_temp")
         with open(temp_file_path, "w") as f:
-            f.write("helthcheck_ok")
+            f.write("healthcheck_ok")
         os.remove(temp_file_path)
         storage_status = "ok"
     except Exception as e:

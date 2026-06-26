@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     storage_path: str = "/data"
     chunk_size_bytes: int = 20971520
 
+    redis_max_connections: int = 20
+    redis_socket_timeout: float = 2.0
+    redis_health_check_interval: int = 30
+    redis_cache_ttl: int = 5
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

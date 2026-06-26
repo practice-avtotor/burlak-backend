@@ -27,6 +27,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.18",
     "httpx2",
+    "fakeredis>=2.36.2",
 ]
 
 [tool.pytest.ini_options]
