@@ -2,6 +2,7 @@ import os
 import sqlite3
 import threading
 from collections.abc import Generator
+from unittest.mock import patch
 
 import aiosqlite
 import pytest
@@ -14,6 +15,13 @@ from app.db import (
     sync_repository,
 )
 from app.db.database import Base, get_async_db, get_db
+
+
+@pytest.fixture(autouse=True)
+def mock_redis_publish() -> Generator[None, None, None]:
+    """Bypasses Redis Pub/Sub progress publishing in DB-only tests to avoid connection timeouts."""
+    with patch("app.db.sync_repository._publish_progress"):
+        yield
 
 
 @pytest.fixture

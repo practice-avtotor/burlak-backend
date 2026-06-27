@@ -35,9 +35,7 @@ async def get_async_db() -> AsyncGenerator[aiosqlite.Connection, None]:
     Provides an aiosqlite connection to the SQLite database.
     The connection is closed when the request is finished.
     """
-    db_path = settings.db_url
-    if db_path.startswith("sqlite:///"):
-        db_path = db_path[len("sqlite:///") :]
+    db_path = settings.sqlite_db_path
     db = await aiosqlite.connect(db_path)
     db.row_factory = aiosqlite.Row
     try:

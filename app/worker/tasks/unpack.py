@@ -1,61 +1,64 @@
-"""Unpack task: stream ZIP table of contents, create card DB records.
-
-Reads the archive TOC via zipfile.infolist() (never extractall),
-creates card records in SQLite, then triggers analyze_mapping.
-"""
-
-from __future__ import annotations
-
 import logging
+import os
 import zipfile
-from typing import Any
 
+from celery import Task  # type: ignore[import-untyped]
+
+from app.db import sync_repository
 from app.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
-    bind=True,
-    max_retries=3,
-    retry_backoff=True,
-    retry_backoff_max=30,
-    name="app.worker.tasks.unpack.unpack",
-)
-def unpack(self: Any, job_id: int) -> None:
-    """Stream ZIP TOC and create card records."""
-    from app.core.config import get_settings
-    from app.db import sync_repository
-
-    settings = get_settings()
-    archive_path = f"{settings.storage_path}/{job_id}/archive.zip"
-
+@celery_app.task(bind=True, max_retries=3, retry_backoff=True, retry_backoff_max=30)  # type: ignore[untyped-decorator]
+def unpack(self: Task, job_id: int) -> None:
+    """Reads ZIP contents streaming-only, creates cards records, and triggers analysis."""
+    logger.info(f"Starting unpack task for job {job_id}")
     try:
-        with zipfile.ZipFile(archive_path) as zf:
-            card_paths = [
-                info.filename
-                for info in zf.infolist()
-                if not info.is_dir()
-                and info.filename.lower().endswith((".xlsx", ".xls"))
-            ]
+        # 1. Update job stage to unpacking
+        sync_repository.update_job_status(job_id, "processing", "unpacking")
 
-        if not card_paths:
-            logger.error("No Excel files found in archive for job %d", job_id)
-            sync_repository.set_job_error(job_id, "No Excel files found in archive")
-            return
+        # 2. Get file paths
+        _, archive_path = sync_repository.get_job_files(job_id)
+        if not archive_path or not os.path.exists(archive_path):
+            raise FileNotFoundError(f"Archive file not found: {archive_path}")
 
-        sync_repository.create_cards_bulk(job_id, card_paths)
-        sync_repository.update_job_stage(job_id, "analyzing_mapping")
+        # 3. Read ZIP table of contents (streaming metadata only, no extraction to disk)
+        card_paths = []
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                filename = info.filename
+                # Exclude hidden files or OS artifacts (like macOS metadata)
+                if (
+                    filename.startswith(".")
+                    or "__MACOSX" in filename
+                    or filename.split("/")[-1].startswith(".")
+                ):
+                    continue
+                # We only process xlsx cards
+                if filename.endswith(".xlsx"):
+                    card_paths.append(filename)
 
-        logger.info("Unpacked %d cards for job %d", len(card_paths), job_id)
+        logger.info(
+            f"Job {job_id}: found {len(card_paths)} operational card files in archive"
+        )
 
+        # 4. Save cards to DB and set total count
+        sync_repository.create_cards(job_id, card_paths)
+
+        # 5. Transition to next stage
+        sync_repository.update_job_status(job_id, "processing", "analyzing_mapping")
+
+        # 6. Trigger analyze task
         from app.worker.tasks.analyze_mapping import analyze_mapping
 
         analyze_mapping.delay(job_id)
 
-    except zipfile.BadZipFile as exc:
-        logger.error("Bad ZIP file for job %d: %s", job_id, exc)
-        sync_repository.set_job_error(job_id, f"Invalid ZIP archive: {exc}")
     except Exception as exc:
-        logger.error("Unpack failed for job %d: %s", job_id, exc)
+        logger.error(f"Unpack failed for job {job_id}: {exc}", exc_info=True)
+        # Attempt to mark the job as failed if error is unrecoverable or on final retry
+        if self.request.retries >= self.max_retries:
+            sync_repository.update_job_status(job_id, "error")
         raise self.retry(exc=exc)
