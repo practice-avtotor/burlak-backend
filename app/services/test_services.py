@@ -17,6 +17,7 @@ from app.core.exceptions import (
 )
 from app.db import async_repository
 from app.db.database import Base
+from app.db.models import Cards, Jobs  # noqa: F401
 from app.services.file_service import FileService
 from app.services.job_creation_service import JobCreationService
 from app.services.job_processing_service import JobProcessingService
@@ -243,8 +244,10 @@ async def test_job_processing_transition_success(
 
 
 def test_job_processing_dispatch() -> None:
-    """Test that dispatch_processing triggers successfully (no-op placeholder)."""
-    JobProcessingService.dispatch_processing(1)
+    """Test that dispatch_processing triggers successfully."""
+    with patch("app.worker.tasks.unpack.unpack.delay") as mock_delay:
+        JobProcessingService.dispatch_processing(1)
+        mock_delay.assert_called_once_with(1)
 
 
 # ----------------------------------------------------------------------

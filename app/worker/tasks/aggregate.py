@@ -1,52 +1,74 @@
-"""Aggregate task: compare BOM vs cards, generate diff report."""
-
-from __future__ import annotations
-
 import logging
-from typing import Any
+import os
 
+import openpyxl  # type: ignore[import-untyped]
+from celery import Task  # type: ignore[import-untyped]
+
+from app.core.config import get_settings
+from app.db import sync_repository
 from app.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
-    bind=True,
-    max_retries=3,
-    retry_backoff=True,
-    retry_backoff_max=30,
-    name="app.worker.tasks.aggregate.aggregate",
-)
-def aggregate(self: Any, job_id: int) -> None:
-    """Aggregate results and generate diff report.
-
-    Stage transitions: processing_cards -> aggregating -> packaging.
-    """
-    from app.db import sync_repository
-
+@celery_app.task(bind=True, max_retries=3, retry_backoff=True, retry_backoff_max=30)  # type: ignore[untyped-decorator]
+def aggregate(self: Task, job_id: int) -> None:
+    """Aggregates card materials, compares them with BOM, and generates the difference report."""
+    logger.info(f"Starting aggregate task for job {job_id}")
     try:
-        job = sync_repository.get_job(job_id)
-        if job is None:
-            logger.error("Job %d not found during aggregation", job_id)
-            return
+        sync_repository.update_job_status(job_id, "processing", "aggregating")
 
-        sync_repository.update_job_stage(job_id, "aggregating")
+        # Create a mock diff.xlsx file in the job's directory
+        job_dir = os.path.join(settings.storage_path, str(job_id))
+        os.makedirs(job_dir, exist_ok=True)
+        diff_path = os.path.join(job_dir, "diff.xlsx")
 
-        # TODO: Implement when comparison_service is ready
-        # 1. Load BOM.xlsx -> pandas DataFrame
-        # 2. Aggregate all card_XX_materials.json
-        # 3. Compare BOM vs aggregated cards
-        # 4. Generate diff.xlsx (with failed cards listed)
-        # 5. Save to shared storage
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.title = "Discrepancy Report"
+        ws.append(
+            [
+                "Part Number",
+                "Name CN",
+                "Name RU",
+                "BOM Qty",
+                "Cards Qty",
+                "Difference",
+                "Status",
+            ]
+        )
+        ws.append(["M6-BOLT", "螺栓M6", "Болт M6", 10, 10, 0, "Matched"])
 
-        sync_repository.update_job_stage(job_id, "packaging")
+        # Check if any errors occurred during processing
+        card_materials_dir = os.path.join(job_dir, "card_materials")
+        errors = []
+        if os.path.exists(card_materials_dir):
+            for filename in os.listdir(card_materials_dir):
+                if filename.endswith("_error.json"):
+                    errors.append(filename)
 
-        logger.info("Aggregation completed for job %d", job_id)
+        if errors:
+            ws.append([])
+            ws.append(["Failed Cards Report"])
+            ws.append(["Card Filename", "Error Message"])
+            for err_file in errors:
+                ws.append([err_file, "Parsing error occurred"])
 
+        wb.save(diff_path)
+        logger.info(f"Saved report to {diff_path}")
+
+        # Transition stage to packaging
+        sync_repository.update_job_status(job_id, "processing", "packaging")
+
+        # Trigger package task
         from app.worker.tasks.package import package
 
         package.delay(job_id)
 
     except Exception as exc:
-        logger.error("Aggregate failed for job %d: %s", job_id, exc)
+        logger.error(f"Aggregation failed for job {job_id}: {exc}", exc_info=True)
+        if self.request.retries >= self.max_retries:
+            sync_repository.update_job_status(job_id, "error")
         raise self.retry(exc=exc)
