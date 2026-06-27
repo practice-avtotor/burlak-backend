@@ -213,12 +213,65 @@ def update_job_stage(job_id: int, stage: str) -> None:
 
 
 def update_mapping_config(job_id: int, mapping_config: dict[str, Any]) -> None:
-    """Update the mapping config JSON field for a job."""
+    """Updates the mapping config field for a job synchronously (WAL-safe)."""
     _update_job(job_id, mapping_config=json.dumps(mapping_config))
 
 
+def update_job_status(job_id: int, status: str, stage: str | None = None) -> None:
+    """Updates the status and stage of a job synchronously (WAL-safe)."""
+    _update_job(job_id, status=status, stage=stage)
+
+
+def get_mapping_config(job_id: int) -> dict[str, Any]:
+    """Retrieves the mapping config for a job synchronously."""
+    db_path = get_settings().db_url
+    if db_path.startswith("sqlite:///"):
+        db_path = db_path[len("sqlite:///") :]
+
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "SELECT mapping_config FROM jobs WHERE id = ?", (job_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"Job {job_id} not found")
+        config_str = row["mapping_config"]
+        if not config_str:
+            return {}
+        return json.loads(config_str)  # type: ignore[no-any-return]
+    finally:
+        conn.close()
+
+
+def get_job_files(job_id: int) -> tuple[str | None, str | None]:
+    """Retrieves the absolute paths of BOM and archive for a job."""
+    db_path = get_settings().db_url
+    if db_path.startswith("sqlite:///"):
+        db_path = db_path[len("sqlite:///") :]
+
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "SELECT bom_path, archive_path FROM jobs WHERE id = ?", (job_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"Job {job_id} not found")
+        return row["bom_path"], row["archive_path"]
+    finally:
+        conn.close()
+
+
+def create_cards(job_id: int, card_paths: list[str]) -> None:
+    """Creates card records and sets the total card count on the job synchronously (WAL-safe)."""
+    create_cards_bulk(job_id, card_paths)
+
+
 def get_card_paths(job_id: int) -> list[str]:
-    """Retrieve all card paths for a job."""
+    """Retrieves all card paths for a job synchronously."""
     conn = _get_conn()
     try:
         cursor = conn.execute(
