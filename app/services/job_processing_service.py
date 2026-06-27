@@ -51,4 +51,5 @@ class JobProcessingService:
         without awaiting the result.
         """
         from app.worker.tasks.unpack import unpack
+
         unpack.delay(job_id)
