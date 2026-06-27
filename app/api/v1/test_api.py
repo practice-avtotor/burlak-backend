@@ -1,38 +1,37 @@
 import sqlite3
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 
+import app.db.models as _models  # noqa: F401 — register Jobs/Cards tables with Base.metadata
 from app.core.config import get_settings
 from app.db.database import Base, get_async_db
 from app.main import app
 
 
-class MockRedisSuccess:
-    async def ping(self) -> bool:
-        return True
-
-    async def __aenter__(self) -> "MockRedisSuccess":
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        pass
-
-
-class MockRedisFailure:
-    async def ping(self) -> bool:
-        raise Exception("Redis connection timed out")
-
-    async def __aenter__(self) -> "MockRedisFailure":
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        pass
+@pytest.fixture(autouse=True)
+def _mock_redis() -> Generator[None, None, None]:
+    """Mock all Redis-dependent services so tests don't require a live Redis."""
+    with (
+        patch(
+            "app.api.v1.jobs.get_cached_job_status",
+            return_value=None,
+        ),
+        patch(
+            "app.api.v1.jobs.cache_job_status",
+        ),
+        patch(
+            "app.services.job_processing_service.invalidate_job_cache",
+        ),
+        patch(
+            "app.api.v1.jobs.subscribe_progress",
+        ),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -89,7 +88,10 @@ def test_health_endpoint_healthy(
     mock_storage_path: Path,
 ) -> None:
     """Test health endpoint returns 200 OK when all systems are healthy."""
-    with patch("app.api.v1.health.aioredis.from_url", return_value=MockRedisSuccess()):
+    with patch(
+        "app.api.v1.health.check_redis_health",
+        return_value={"redis": "healthy", "redis_version": "7.0.0"},
+    ):
         response = api_client.get("/api/v1/health")
         assert response.status_code == 200
         data = response.json()
@@ -104,7 +106,10 @@ def test_health_endpoint_unhealthy(
     mock_storage_path: Path,
 ) -> None:
     """Test health endpoint returns 503 Service Unavailable when a check fails."""
-    with patch("app.api.v1.health.aioredis.from_url", return_value=MockRedisFailure()):
+    with patch(
+        "app.api.v1.health.check_redis_health",
+        return_value={"redis": "unhealthy", "error": "Redis connection timed out"},
+    ):
         response = api_client.get("/api/v1/health")
         assert response.status_code == 503
         data = response.json()
