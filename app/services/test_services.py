@@ -238,7 +238,13 @@ async def test_job_processing_transition_success(
             async_db, job_id, "archive", "/data/archive.zip", True
         )
 
-        state = await JobProcessingService.transition_to_processing(async_db, job_id)
+        with patch(
+            "app.services.job_processing_service.invalidate_job_cache"
+        ) as mock_invalidate:
+            state = await JobProcessingService.transition_to_processing(
+                async_db, job_id
+            )
+            mock_invalidate.assert_called_once_with(job_id)
         assert state["status"] == "processing"
         assert state["stage"] == "unpacking"
 

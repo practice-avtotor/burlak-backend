@@ -2,6 +2,7 @@ import io
 import json
 import logging
 import os
+import re
 import traceback
 import zipfile
 
@@ -10,17 +11,32 @@ from celery import Task  # type: ignore[import-untyped]
 
 from app.core.config import get_settings
 from app.db import sync_repository
-from app.services.card_parser_service import (
-    classify_file,
-    extract_card_number,
-    find_sheet_mapping,
-    find_table_end,
-)
+from app.services.card_parser_service import CardParserService
 from app.services.structure_adapter import StructureAdapter
 from app.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def extract_card_number(card_path: str) -> str:
+    """Extract card number from card path/filename.
+
+    Fallback to basename without extension.
+    """
+    basename = os.path.basename(card_path)
+    name_no_ext, _ = os.path.splitext(basename)
+
+    # Try typical prefix-AS-number pattern
+    match = re.match(r"^([a-zA-Z0-9]+-AS-[0-9]+)", name_no_ext, re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    match = re.match(r"^([a-zA-Z0-9]+-[0-9]+)", name_no_ext)
+    if match:
+        return match.group(1)
+
+    return name_no_ext
 
 
 @celery_app.task(bind=True, max_retries=3, retry_backoff=True, retry_backoff_max=30)  # type: ignore[untyped-decorator]
@@ -52,10 +68,10 @@ def process_card(self: Task, job_id: int, card_path: str) -> None:
                 raise FileNotFoundError(f"Card {card_path} not found in zip archive")
 
         # 3. Classify card
-        classification, format_group = classify_file(card_path, mapping_config["cards"])
-        logger.info(
-            f"Card {card_path} classified as '{classification}' (format group: '{format_group}')"
-        )
+        parser = CardParserService(mapping_config)
+        filename = os.path.basename(card_path)
+        classification = parser.classify(filename)
+        logger.info(f"Card {card_path} classified as '{classification}'")
 
         # Destination paths
         dest_xlsx_path = os.path.join(translated_cards_dir, card_path)
@@ -82,76 +98,14 @@ def process_card(self: Task, job_id: int, card_path: str) -> None:
             return
 
         # 4. Parse the operational card
-        format_config = mapping_config["cards"]["formats"][format_group]
-        card_no = extract_card_number(card_path, format_config)
+        parse_result = parser.parse_card(card_bytes, filename)
+        if parse_result.error:
+            raise ValueError(parse_result.error)
 
-        # Load workbook (data_only=False to preserve styles, formulas, and fonts when saving)
-        wb = openpyxl.load_workbook(io.BytesIO(card_bytes), data_only=False)
+        card_no = extract_card_number(card_path)
 
-        parts = []
-        unique_chinese_texts = set()
-
-        # We need mapping cell reference (sheet, row, col) to keep track of where to write translated values
-        cell_updates = []
-
-        for sheet_name in wb.sheetnames:
-            sheet_mapping = find_sheet_mapping(sheet_name, format_config["sheets"])
-            if not sheet_mapping:
-                continue
-
-            ws = wb[sheet_name]
-            cols = sheet_mapping["columns"]
-            part_no_col = cols["part_no"]["col_index"]
-            name_cn_col = cols["name_cn"]["col_index"]
-            qty_col = cols["qty"]["col_index"]
-
-            data_start = sheet_mapping["data_start_row"]
-            end_row = find_table_end(
-                ws, data_start, boundaries_config=sheet_mapping["table_boundaries"]
-            )
-
-            for r in range(data_start, end_row + 1):
-                part_no_val = ws.cell(row=r, column=part_no_col).value
-                name_cn_val = ws.cell(row=r, column=name_cn_col).value
-                qty_val = ws.cell(row=r, column=qty_col).value
-
-                # Skip empty parts
-                if not part_no_val:
-                    continue
-
-                part_no = str(part_no_val).strip()
-                name_cn = str(name_cn_val).strip() if name_cn_val is not None else ""
-
-                # Standardize quantity
-                qty = 0
-                if qty_val is not None:
-                    try:
-                        qty = int(float(str(qty_val).strip()))
-                    except ValueError:
-                        pass
-
-                parts.append(
-                    {
-                        "card_no": card_no,
-                        "sheet_name": sheet_name,
-                        "row_index": r,
-                        "part_no": part_no,
-                        "name_cn": name_cn,
-                        "name_ru": name_cn,  # default to CN
-                        "qty": qty,
-                    }
-                )
-
-                if name_cn:
-                    unique_chinese_texts.add(name_cn)
-                    cell_updates.append(
-                        {
-                            "sheet_name": sheet_name,
-                            "row": r,
-                            "col": name_cn_col,
-                            "original_val": name_cn,
-                        }
-                    )
+        # Extract unique Chinese names for translation
+        unique_chinese_texts = {p.name for p in parse_result.parts if p.name}
 
         # 5. Translate Chinese names
         translations = {}
@@ -165,20 +119,35 @@ def process_card(self: Task, job_id: int, card_path: str) -> None:
                 )
 
         # 6. Apply style-preserving updates and update parts
-        for part in parts:
-            part["name_ru"] = translations.get(part["name_cn"], part["name_cn"])
+        parts = []
+        for p in parse_result.parts:
+            parts.append(
+                {
+                    "card_no": card_no,
+                    "sheet_name": p.source_sheet,
+                    "row_index": p.row,
+                    "part_no": p.part_number,
+                    "name_cn": p.name,
+                    "name_ru": translations.get(p.name, p.name),
+                    "qty": p.quantity,
+                }
+            )
 
-        for update in cell_updates:
-            ws = wb[update["sheet_name"]]
-            r = update["row"]
-            col = update["col"]
-            original = update["original_val"]
-            ws.cell(row=r, column=col).value = translations.get(original, original)
+        # Save translated workbook (data_only=False to preserve styles, formulas, and fonts when saving)
+        name_col = mapping_config.get("cards", {}).get("columns", {}).get("name", 0)
+        wb = openpyxl.load_workbook(io.BytesIO(card_bytes), data_only=False)
+        try:
+            for p in parse_result.parts:
+                if p.name and name_col > 0:
+                    ws = wb[p.source_sheet]
+                    ws.cell(row=p.row, column=name_col).value = translations.get(
+                        p.name, p.name
+                    )
+            wb.save(dest_xlsx_path)
+        finally:
+            wb.close()
 
         # 7. Write results to shared storage
-        # Save translated workbook
-        wb.save(dest_xlsx_path)
-
         # Save parts list as JSON
         with open(card_materials_path, "w", encoding="utf-8") as f:
             json.dump(parts, f, ensure_ascii=False, indent=2)

@@ -224,9 +224,7 @@ def get_mapping_config(job_id: int) -> dict[str, Any]:
     """Retrieves the mapping config for a job synchronously."""
     conn = _get_conn()
     try:
-        cursor = conn.execute(
-            "SELECT mapping_config FROM jobs WHERE id = ?", (job_id,)
-        )
+        cursor = conn.execute("SELECT mapping_config FROM jobs WHERE id = ?", (job_id,))
         row = cursor.fetchone()
         if not row:
             raise ValueError(f"Job {job_id} not found")

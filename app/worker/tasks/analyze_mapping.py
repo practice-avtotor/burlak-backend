@@ -6,7 +6,7 @@ from celery import Task  # type: ignore[import-untyped]
 
 from app.core.config import get_settings
 from app.db import sync_repository
-from app.services.snapshot_service import SnapshotService, group_by_format
+from app.services.snapshot_service import extract_snapshot_from_bytes, group_by_format
 from app.services.structure_adapter import StructureAdapter
 from app.worker.celery_app import celery_app
 
@@ -29,7 +29,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
         # 2. Extract BOM snapshot
         with open(bom_path, "rb") as f:
             bom_data = f.read()
-        bom_snapshot = SnapshotService.extract_snapshot_from_bytes(
+        bom_snapshot = extract_snapshot_from_bytes(
             bom_data, os.path.basename(bom_path), max_rows=50
         )
         bom_snapshot["format_group"] = "BOM_standard"
@@ -58,7 +58,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                 representative_path = paths[0]
                 try:
                     card_data = zf.read(representative_path)
-                    snapshot = SnapshotService.extract_snapshot_from_bytes(
+                    snapshot = extract_snapshot_from_bytes(
                         card_data, os.path.basename(representative_path), max_rows=50
                     )
                     snapshot["format_group"] = group_name
@@ -73,14 +73,15 @@ def analyze_mapping(self: Task, job_id: int) -> None:
         ml_client = StructureAdapter(settings.ml_service_url)
         logger.info(f"Invoking ML analyze-structure endpoint for job {job_id}")
 
-        response = ml_client.analyze_structure(
-            bom_snapshots=[bom_snapshot],
-            card_snapshots=card_snapshots,
-            options={
+        payload = {
+            "bom": [bom_snapshot],
+            "sample_cards": card_snapshots,
+            "options": {
                 "max_sample_rows": 50,
                 "total_cards_in_archive": len(card_paths),
             },
-        )
+        }
+        response = ml_client.analyze_structure(payload)
 
         mapping_config = response
         if (
