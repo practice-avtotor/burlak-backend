@@ -17,6 +17,16 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    @property
+    def sqlite_db_path(self) -> str:
+        """Returns the raw file path of the SQLite database file (without sqlite:/// prefix)."""
+        path = self.db_url
+        if path.startswith("sqlite:///"):
+            return path[len("sqlite:///") :]
+        elif path.startswith("sqlite://"):
+            return path[len("sqlite://") :]
+        return path
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -26,9 +26,7 @@ class ProgressResult:
 
 def _get_conn() -> sqlite3.Connection:
     """Create a sqlite3 connection with Row factory and WAL mode."""
-    db_path = get_settings().db_url
-    if db_path.startswith("sqlite:///"):
-        db_path = db_path[len("sqlite:///") :]
+    db_path = get_settings().sqlite_db_path
     conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -224,12 +222,7 @@ def update_job_status(job_id: int, status: str, stage: str | None = None) -> Non
 
 def get_mapping_config(job_id: int) -> dict[str, Any]:
     """Retrieves the mapping config for a job synchronously."""
-    db_path = get_settings().db_url
-    if db_path.startswith("sqlite:///"):
-        db_path = db_path[len("sqlite:///") :]
-
-    conn = sqlite3.connect(db_path, timeout=30.0)
-    conn.row_factory = sqlite3.Row
+    conn = _get_conn()
     try:
         cursor = conn.execute(
             "SELECT mapping_config FROM jobs WHERE id = ?", (job_id,)
@@ -247,12 +240,7 @@ def get_mapping_config(job_id: int) -> dict[str, Any]:
 
 def get_job_files(job_id: int) -> tuple[str | None, str | None]:
     """Retrieves the absolute paths of BOM and archive for a job."""
-    db_path = get_settings().db_url
-    if db_path.startswith("sqlite:///"):
-        db_path = db_path[len("sqlite:///") :]
-
-    conn = sqlite3.connect(db_path, timeout=30.0)
-    conn.row_factory = sqlite3.Row
+    conn = _get_conn()
     try:
         cursor = conn.execute(
             "SELECT bom_path, archive_path FROM jobs WHERE id = ?", (job_id,)
