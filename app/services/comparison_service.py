@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +49,11 @@ _PART_NO_KEYWORDS = ("零件号", "零件编号", "part no", "part_no", "part nu
 _NAME_CN_KEYWORDS = ("零件名称", "名称", "物料名称", "name_cn")
 _NAME_EN_KEYWORDS = ("英文名称", "english name", "name_en")
 _QTY_KEYWORDS = ("数量", "用量", "数量/用量", "qty", "quantity")
+
+
+def _join_card_numbers(xs: pd.Series) -> str:
+    """Join unique card numbers into a comma-separated string."""
+    return ", ".join(sorted(set(xs)))
 
 
 class ComparisonService:
@@ -146,7 +149,7 @@ class ComparisonService:
                     COL_NAME_CN: "first",
                     COL_NAME_EN: "first",
                     COL_QTY: "sum",
-                    COL_CARD_NUMBER: lambda xs: ", ".join(sorted(set(xs))),
+                    COL_CARD_NUMBER: _join_card_numbers,
                 }
             )
             .reset_index(drop=True)
@@ -290,24 +293,6 @@ class ComparisonService:
                 "font_size": 10,
             }
         )
-        cell_center_fmt = workbook.add_format(
-            {
-                "border": 1,
-                "text_wrap": True,
-                "align": "center",
-                "valign": "vcenter",
-                "font_size": 10,
-            }
-        )
-        cell_num_fmt = workbook.add_format(
-            {
-                "border": 1,
-                "align": "center",
-                "valign": "vcenter",
-                "num_format": "0.00",
-                "font_size": 10,
-            }
-        )
         title_fmt = workbook.add_format(
             {
                 "bold": True,
@@ -324,35 +309,6 @@ class ComparisonService:
         value_fmt = workbook.add_format(
             {
                 "font_size": 11,
-            }
-        )
-
-        # Color formats per discrepancy type
-        qty_fmt = workbook.add_format(
-            {
-                "border": 1,
-                "bg_color": "#FCE4EC",
-                "text_wrap": True,
-                "valign": "vcenter",
-                "font_size": 10,
-            }
-        )
-        bom_only_fmt = workbook.add_format(
-            {
-                "border": 1,
-                "bg_color": "#FFF2CC",
-                "text_wrap": True,
-                "valign": "vcenter",
-                "font_size": 10,
-            }
-        )
-        cards_only_fmt = workbook.add_format(
-            {
-                "border": 1,
-                "bg_color": "#D9E2F3",
-                "text_wrap": True,
-                "valign": "vcenter",
-                "font_size": 10,
             }
         )
 

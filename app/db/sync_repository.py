@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)

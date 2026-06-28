@@ -26,7 +26,6 @@ from app.db.sync_repository import (
 )
 from app.services.comparison_service import ComparisonService
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Fixtures
 # ══════════════════════════════════════════════════════════════════════════════

@@ -28,6 +28,8 @@ dev = [
     "ruff>=0.15.18",
     "httpx2",
     "fakeredis>=2.36.2",
+    "pandas-stubs>=3.0.3.260530",
+    "types-openpyxl>=3.1.5.20260518",
 ]
 
 [tool.pytest.ini_options]
@@ -39,6 +41,10 @@ strict = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["xlsxwriter"]
+ignore_missing_imports = true
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP"]
