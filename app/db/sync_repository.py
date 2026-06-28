@@ -1,6 +1,8 @@
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from app.core.config import get_settings
 
@@ -105,3 +107,104 @@ def increment_progress(
         raise
     finally:
         conn.close()
+
+
+def get_job_files(job_id: int) -> tuple[str, str]:
+    """Returns ``(bom_path, archive_path)`` for the given *job_id*.
+
+    Uses a raw sqlite3 connection (same pattern as ``increment_progress``).
+    """
+    db_path = _resolve_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "SELECT bom_path, archive_path FROM jobs WHERE id = ?",
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise ValueError(f"Job {job_id} not found")
+        bom_path = row["bom_path"]
+        archive_path = row["archive_path"]
+        if not bom_path:
+            raise ValueError(f"Job {job_id} has no bom_path set")
+        if not archive_path:
+            raise ValueError(f"Job {job_id} has no archive_path set")
+        return (bom_path, archive_path)
+    finally:
+        conn.close()
+
+
+def get_mapping_config(job_id: int) -> dict[str, Any] | None:
+    """Returns the ``mapping_config`` JSON for the given *job_id*.
+
+    Returns ``None`` if the job has no mapping config set.
+    """
+    db_path = _resolve_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "SELECT mapping_config FROM jobs WHERE id = ?",
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise ValueError(f"Job {job_id} not found")
+        raw = row["mapping_config"]
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            return json.loads(raw)
+        return raw  # already a dict
+    finally:
+        conn.close()
+
+
+def update_job_status(
+    job_id: int,
+    status: str,
+    stage: str | None = None,
+) -> None:
+    """Updates the ``status`` and optionally ``stage`` of a job.
+
+    Uses ``BEGIN IMMEDIATE`` for WAL-safety.
+    """
+    db_path = _resolve_db_path()
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if stage is not None:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, stage, now, job_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, now, job_id),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _resolve_db_path() -> str:
+    """Resolve the SQLite database path from settings."""
+    db_path = get_settings().db_url
+    if db_path.startswith("sqlite:///"):
+        db_path = db_path[len("sqlite:///") :]
+    return db_path
