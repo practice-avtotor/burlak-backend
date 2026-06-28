@@ -12,9 +12,13 @@ from app.schemas.job import ErrorDetail, ErrorResponse
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown events."""
-    # Startup: nothing to initialize yet
+    from app.core.redis import close_redis, get_redis
+
+    # Startup: initialize Redis connection pool
+    await get_redis()
     yield
-    # Shutdown: cleanup if needed
+    # Shutdown: close Redis connections
+    await close_redis()
 
 
 app = FastAPI(

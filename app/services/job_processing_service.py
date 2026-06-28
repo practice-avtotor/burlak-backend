@@ -2,6 +2,7 @@ import aiosqlite
 
 from app.core.exceptions import JobNotFoundError, JobStateError
 from app.db.async_repository import get_job, try_start_processing
+from app.services.cache_service import invalidate_job_cache
 
 
 class JobProcessingService:
@@ -20,6 +21,7 @@ class JobProcessingService:
         """Atomically validate preconditions and transition job status to 'processing'.
 
         If preconditions are not met, raises corresponding error (404 or 409).
+        Invalidates the job status cache after mutation.
 
         Returns:
             The new status and stage written to the database.
@@ -38,6 +40,7 @@ class JobProcessingService:
                     f"Job {job_id} cannot be started: BOM and archive must be fully uploaded"
                 )
             raise JobStateError(f"Job {job_id} cannot be started")
+        await invalidate_job_cache(job_id)
         return {"status": "processing", "stage": "unpacking"}
 
     @staticmethod
@@ -47,6 +50,6 @@ class JobProcessingService:
         This is intentionally a sync method — it only enqueues work
         without awaiting the result.
         """
-        # TODO: Trigger Celery task unpack.delay(job_id)
-        # from app.worker.tasks.unpack import unpack
-        # unpack.delay(job_id)
+        from app.worker.tasks.unpack import unpack
+
+        unpack.delay(job_id)

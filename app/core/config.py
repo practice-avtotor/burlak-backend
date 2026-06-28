@@ -10,7 +10,22 @@ class Settings(BaseSettings):
     storage_path: str = "/data"
     chunk_size_bytes: int = 20971520
 
+    redis_max_connections: int = 20
+    redis_socket_timeout: float = 2.0
+    redis_health_check_interval: int = 30
+    redis_cache_ttl: int = 5
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def sqlite_db_path(self) -> str:
+        """Returns the raw file path of the SQLite database file (without sqlite:/// prefix)."""
+        path = self.db_url
+        if path.startswith("sqlite:///"):
+            return path[len("sqlite:///") :]
+        elif path.startswith("sqlite://"):
+            return path[len("sqlite://") :]
+        return path
 
 
 @lru_cache
