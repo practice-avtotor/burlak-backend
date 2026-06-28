@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -472,13 +473,13 @@ class TestPackage:
         """_create_zip should create a valid ZIP with all XLSX files."""
         from app.worker.tasks.package import _create_zip
 
-        translated_dir = job_dir_with_translated_cards / "translated_cards"
-        zip_path = job_dir_with_translated_cards / "translated_cards.zip"
+        translated_dir = str(job_dir_with_translated_cards / "translated_cards")
+        zip_path = str(job_dir_with_translated_cards / "translated_cards.zip")
 
         _create_zip(translated_dir, zip_path)
 
-        assert zip_path.exists()
-        with zipfile.ZipFile(str(zip_path), "r") as zf:
+        assert os.path.exists(zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zf:
             names = zf.namelist()
             assert len(names) == 2
             assert "card_1_translated.xlsx" in names
@@ -488,40 +489,40 @@ class TestPackage:
         """_create_zip should create an empty ZIP when directory is empty."""
         from app.worker.tasks.package import _create_zip
 
-        empty_dir = tmp_path / "empty"
-        empty_dir.mkdir()
-        zip_path = tmp_path / "empty.zip"
+        empty_dir = str(tmp_path / "empty")
+        os.makedirs(empty_dir, exist_ok=True)
+        zip_path = str(tmp_path / "empty.zip")
 
         _create_zip(empty_dir, zip_path)
-        assert zip_path.exists()
-        with zipfile.ZipFile(str(zip_path), "r") as zf:
+        assert os.path.exists(zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zf:
             assert len(zf.namelist()) == 0
 
     def test_create_zip_missing_dir(self, tmp_path: Path):
         """_create_zip should create empty ZIP when directory doesn't exist."""
         from app.worker.tasks.package import _create_zip
 
-        missing_dir = tmp_path / "nonexistent"
-        zip_path = tmp_path / "missing.zip"
+        missing_dir = str(tmp_path / "nonexistent")
+        zip_path = str(tmp_path / "missing.zip")
 
         _create_zip(missing_dir, zip_path)
-        assert zip_path.exists()
+        assert os.path.exists(zip_path)
 
     def test_cleanup_translated_dir(self, job_dir_with_translated_cards: Path):
         """_cleanup_translated_dir should remove the directory."""
         from app.worker.tasks.package import _cleanup_translated_dir
 
-        translated_dir = job_dir_with_translated_cards / "translated_cards"
-        assert translated_dir.is_dir()
+        translated_dir = str(job_dir_with_translated_cards / "translated_cards")
+        assert os.path.isdir(translated_dir)
 
         _cleanup_translated_dir(translated_dir)
-        assert not translated_dir.exists()
+        assert not os.path.exists(translated_dir)
 
     def test_cleanup_translated_dir_already_gone(self, tmp_path: Path):
         """_cleanup_translated_dir should not raise if dir already gone."""
         from app.worker.tasks.package import _cleanup_translated_dir
 
-        gone_dir = tmp_path / "already_gone"
+        gone_dir = str(tmp_path / "already_gone")
         _cleanup_translated_dir(gone_dir)  # should not raise
 
     def test_count_failed_cards(self, temp_db_path: str):
@@ -585,13 +586,13 @@ class TestSyncRepository:
             settings.db_url = original
 
     def test_get_mapping_config_none(self, temp_db_with_job: int, temp_db_path: str):
-        """get_mapping_config should return None when not set."""
+        """get_mapping_config should return empty dict when not set."""
         settings = get_settings()
         original = settings.db_url
         settings.db_url = temp_db_path
         try:
             config = get_mapping_config(temp_db_with_job)
-            assert config is None
+            assert config == {}
         finally:
             settings.db_url = original
 
@@ -674,16 +675,16 @@ class TestAggregateIntegration:
             for f in job_dir_with_cards.iterdir():
                 shutil.copy2(str(f), str(job_dir / f.name))
 
-            # Run aggregate
-            from app.worker.tasks.aggregate import aggregate
+            # Run aggregate via Celery eager mode
+            from app.worker.tasks.aggregate import aggregate as aggregate_task
 
-            aggregate(temp_db_with_job)
+            aggregate_task.delay(temp_db_with_job)
 
             # Verify diff.xlsx was created
             diff_path = job_dir / "diff.xlsx"
             assert diff_path.exists(), f"diff.xlsx not found at {diff_path}"
 
-            # Verify job status was updated to packaging
+            # Verify job completed successfully (aggregate + package run in eager mode)
             conn = sqlite3.connect(temp_db_path)
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -691,8 +692,8 @@ class TestAggregateIntegration:
                 (temp_db_with_job,),
             ).fetchone()
             conn.close()
-            assert row["status"] == "processing"
-            assert row["stage"] == "packaging"
+            assert row["status"] == "done"
+            assert row["stage"] == "completed"
 
         finally:
             settings.db_url = original_db
@@ -723,10 +724,10 @@ class TestAggregateIntegration:
                 str(job_dir),
             )
 
-            # Run package
-            from app.worker.tasks.package import package
+            # Run package via Celery eager mode
+            from app.worker.tasks.package import package as package_task
 
-            package(temp_db_with_job)
+            package_task.delay(temp_db_with_job)
 
             # Verify ZIP was created
             zip_path = job_dir / "translated_cards.zip"
@@ -775,9 +776,9 @@ class TestAggregateIntegration:
                 str(job_dir),
             )
 
-            from app.worker.tasks.package import package
+            from app.worker.tasks.package import package as package_task
 
-            package(temp_db_with_failed_cards)
+            package_task.delay(temp_db_with_failed_cards)
 
             # Verify final status is error
             conn = sqlite3.connect(temp_db_path)
