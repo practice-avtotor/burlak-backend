@@ -97,7 +97,15 @@ class ComparisonService:
 
     @staticmethod
     def load_cards_data(job_dir: str | Path) -> pd.DataFrame:
-        """Aggregate all ``card_*_materials.json`` files from *job_dir*.
+        """Aggregate all card materials JSON files from *job_dir*.
+
+        Supports two layouts:
+          1. New (preferred): JSON files in ``card_materials/`` subdirectory,
+             produced by ``process_card`` task. Each file is a JSON list of
+             part dicts with keys: ``part_no``, ``name_cn``, ``name_ru``, ``qty``,
+             ``card_no``. Files ending with ``_error.json`` are skipped.
+          2. Legacy: ``card_*_materials.json`` files directly in *job_dir*,
+             each containing ``{"card_number": ..., "parts": [...]}``.
 
         Returns a DataFrame with columns: ``part_no``, ``name_cn``, ``name_en``,
         ``qty``, ``card_number``.  Quantities for the same ``part_no`` appearing
@@ -108,53 +116,23 @@ class ComparisonService:
             raise NotADirectoryError(f"Job directory not found: {job_dir}")
 
         records: list[dict[str, Any]] = []
-        for fpath in sorted(job_dir.iterdir()):
-            if not fpath.name.startswith("card_") or not fpath.name.endswith(
-                "_materials.json"
-            ):
-                continue
-            try:
-                with open(fpath, encoding="utf-8") as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Skipping unreadable card file %s: %s", fpath.name, exc)
-                continue
 
-            card_number = data.get("card_number", fpath.stem)
-            parts = data.get("parts", [])
-            for part in parts:
-                records.append(
-                    {
-                        COL_PART_NO: str(part.get("part_no", "")).strip(),
-                        COL_NAME_CN: str(part.get("name_cn", "")).strip(),
-                        COL_NAME_EN: str(part.get("name_en", "")).strip(),
-                        COL_QTY: float(part.get("qty", 0) or 0),
-                        COL_CARD_NUMBER: card_number,
-                    }
-                )
+        # Try new layout: card_materials/ subdirectory
+        cards_dir = job_dir / "card_materials"
+        if cards_dir.is_dir():
+            records = _load_cards_from_dir(cards_dir)
+            if records:
+                return _aggregate_cards_data(records)
 
+        # Fallback to legacy layout: card_*_materials.json in job_dir root
+        records = _load_cards_legacy(job_dir)
         if not records:
-            logger.warning("No card_*_materials.json found in %s", job_dir)
+            logger.warning("No card materials JSON files found in %s", job_dir)
             return pd.DataFrame(
                 columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
             )
 
-        df = pd.DataFrame(records)
-
-        # Aggregate: sum quantities for the same part_no across cards
-        agg = (
-            df.groupby(COL_PART_NO, as_index=False, sort=False)
-            .agg(
-                {
-                    COL_NAME_CN: "first",
-                    COL_NAME_EN: "first",
-                    COL_QTY: "sum",
-                    COL_CARD_NUMBER: _join_card_numbers,
-                }
-            )
-            .reset_index(drop=True)
-        )
-        return agg
+        return _aggregate_cards_data(records)
 
     @staticmethod
     def compare(
@@ -620,3 +598,117 @@ def _cell_float(ws: Any, row: int, col: int) -> float:
 def _matches_any(text: str, keywords: tuple[str, ...]) -> bool:
     """Check if *text* contains any of the *keywords* (case-insensitive)."""
     return any(kw in text for kw in keywords)
+
+
+# ── Card materials loading helpers ────────────────────────────────────────────
+
+
+def _load_cards_from_dir(cards_dir: Path) -> list[dict[str, Any]]:
+    """Load card materials from ``card_materials/`` subdirectory (new layout).
+
+    Each JSON file is a list of part dicts with keys: ``part_no``, ``name_cn``,
+    ``name_ru``, ``qty``, ``card_no``. Files ending with ``_error.json`` are
+    skipped.
+    """
+    records: list[dict[str, Any]] = []
+
+    for fpath in sorted(cards_dir.iterdir()):
+        if not fpath.is_file() or not fpath.name.endswith(".json"):
+            continue
+        # Skip error files (produced by process_card on failure)
+        if fpath.name.endswith("_error.json"):
+            continue
+
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Skipping unreadable card file %s: %s", fpath.name, exc)
+            continue
+
+        # process_card saves each card's parts as a JSON list directly
+        if isinstance(data, list):
+            parts = data
+            card_number = str(parts[0].get("card_no", fpath.stem)) if parts else fpath.stem
+        elif isinstance(data, dict):
+            # Legacy format inside card_materials: {"card_number": ..., "parts": [...]}
+            card_number = data.get("card_number", fpath.stem)
+            parts = data.get("parts", [])
+        else:
+            logger.warning("Skipping unrecognised card data format in %s", fpath.name)
+            continue
+
+        for part in parts:
+            records.append(
+                {
+                    COL_PART_NO: str(part.get("part_no", "")).strip(),
+                    COL_NAME_CN: str(part.get("name_cn", "")).strip(),
+                    # process_card saves translated name as "name_ru"
+                    COL_NAME_EN: str(part.get("name_ru", part.get("name_en", ""))).strip(),
+                    COL_QTY: float(part.get("qty", 0) or 0),
+                    COL_CARD_NUMBER: card_number,
+                }
+            )
+
+    return records
+
+
+def _load_cards_legacy(job_dir: Path) -> list[dict[str, Any]]:
+    """Load card materials from job_dir root (legacy layout).
+
+    Looks for ``card_*_materials.json`` files, each containing
+    ``{"card_number": ..., "parts": [...]}``.
+    """
+    records: list[dict[str, Any]] = []
+
+    for fpath in sorted(job_dir.iterdir()):
+        if not fpath.name.startswith("card_") or not fpath.name.endswith("_materials.json"):
+            continue
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Skipping unreadable card file %s: %s", fpath.name, exc)
+            continue
+
+        card_number = data.get("card_number", fpath.stem)
+        parts = data.get("parts", [])
+        for part in parts:
+            records.append(
+                {
+                    COL_PART_NO: str(part.get("part_no", "")).strip(),
+                    COL_NAME_CN: str(part.get("name_cn", "")).strip(),
+                    COL_NAME_EN: str(part.get("name_en", "")).strip(),
+                    COL_QTY: float(part.get("qty", 0) or 0),
+                    COL_CARD_NUMBER: card_number,
+                }
+            )
+
+    return records
+
+
+def _aggregate_cards_data(records: list[dict[str, Any]]) -> pd.DataFrame:
+    """Build and aggregate a DataFrame from card material records.
+
+    Quantities for the same ``part_no`` are summed across cards.
+    """
+    if not records:
+        return pd.DataFrame(
+            columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
+        )
+
+    df = pd.DataFrame(records)
+
+    agg = (
+        df.groupby(COL_PART_NO, as_index=False, sort=False)
+        .agg(
+            {
+                COL_NAME_CN: "first",
+                COL_NAME_EN: "first",
+                COL_QTY: "sum",
+                COL_CARD_NUMBER: _join_card_numbers,
+            }
+        )
+        .reset_index(drop=True)
+    )
+    return agg
