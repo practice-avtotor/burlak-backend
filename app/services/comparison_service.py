@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 COL_PART_NO = "part_no"
 COL_NAME_CN = "name_cn"
+COL_NAME_RU = "name_ru"
 COL_NAME_EN = "name_en"
 COL_QTY = "qty"
 COL_CARD_NUMBER = "card_number"
@@ -107,8 +108,8 @@ class ComparisonService:
           2. Legacy: ``card_*_materials.json`` files directly in *job_dir*,
              each containing ``{"card_number": ..., "parts": [...]}``.
 
-        Returns a DataFrame with columns: ``part_no``, ``name_cn``, ``name_en``,
-        ``qty``, ``card_number``.  Quantities for the same ``part_no`` appearing
+        Returns a DataFrame with columns: ``part_no``, ``name_cn``, ``name_ru``,
+        ``name_en``, ``qty``, ``card_number``.  Quantities for the same ``part_no`` appearing
         in multiple cards are summed.
         """
         job_dir = Path(job_dir)
@@ -129,7 +130,7 @@ class ComparisonService:
         if not records:
             logger.warning("No card materials JSON files found in %s", job_dir)
             return pd.DataFrame(
-                columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
+                columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_RU, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
             )
 
         return _aggregate_cards_data(records)
@@ -143,7 +144,7 @@ class ComparisonService:
 
         Returns a dictionary with keys:
           - ``discrepancies``: DataFrame with columns ``part_no``, ``name_cn``,
-            ``name_en``, ``qty_bom``, ``qty_cards``, ``diff``, ``type``.
+            ``name_ru``, ``name_en``, ``qty_bom``, ``qty_cards``, ``diff``, ``type``.
           - ``summary``: dict with counts.
         """
         # Ensure qty is numeric
@@ -152,9 +153,14 @@ class ComparisonService:
         bom_df[COL_QTY] = pd.to_numeric(bom_df[COL_QTY], errors="coerce").fillna(0)
         cards_df[COL_QTY] = pd.to_numeric(cards_df[COL_QTY], errors="coerce").fillna(0)
 
+        # Include name_ru from cards if available
+        cards_merge_cols = [COL_PART_NO, COL_QTY]
+        if COL_NAME_RU in cards_df.columns:
+            cards_merge_cols.append(COL_NAME_RU)
+
         merged = pd.merge(
             bom_df[[COL_PART_NO, COL_NAME_CN, COL_NAME_EN, COL_QTY]],
-            cards_df[[COL_PART_NO, COL_QTY]],
+            cards_df[cards_merge_cols],
             on=COL_PART_NO,
             how="outer",
             indicator=True,
@@ -194,6 +200,8 @@ class ComparisonService:
         # Fill missing name info for cards-only rows
         discrepancies[COL_NAME_CN] = discrepancies[COL_NAME_CN].fillna("")
         discrepancies[COL_NAME_EN] = discrepancies[COL_NAME_EN].fillna("")
+        if COL_NAME_RU in discrepancies.columns:
+            discrepancies[COL_NAME_RU] = discrepancies[COL_NAME_RU].fillna("")
 
         # Sort: qty_mismatch first, then only_in_bom, then only_in_cards
         type_order = {
@@ -483,7 +491,7 @@ def _write_discrepancies_sheet(
     headers = [
         "Каталожный номер",
         "Название (кит.)",
-        "Название (англ.)",
+        "Название (рус.)",
         "Кол-во в BOM",
         "Кол-во в картах",
         "Разница",
@@ -562,7 +570,9 @@ def _write_discrepancies_sheet(
         fmt = color_map.get(dtype, cell_fmt)
         ws.write(ri, 0, row.get(COL_PART_NO, ""), fmt)
         ws.write(ri, 1, row.get(COL_NAME_CN, ""), fmt)
-        ws.write(ri, 2, row.get(COL_NAME_EN, ""), fmt)
+        # Use name_ru if available, fall back to name_en
+        name_ru = row.get(COL_NAME_RU, "")
+        ws.write(ri, 2, name_ru if name_ru else row.get(COL_NAME_EN, ""), fmt)
         ws.write(ri, 3, float(row.get(COL_QTY_BOM, 0)), cell_num_fmt)
         ws.write(ri, 4, float(row.get(COL_QTY_CARDS, 0)), cell_num_fmt)
         ws.write(ri, 5, float(row.get(COL_DIFF, 0)), cell_num_fmt)
@@ -643,8 +653,8 @@ def _load_cards_from_dir(cards_dir: Path) -> list[dict[str, Any]]:
                 {
                     COL_PART_NO: str(part.get("part_no", "")).strip(),
                     COL_NAME_CN: str(part.get("name_cn", "")).strip(),
-                    # process_card saves translated name as "name_ru"
-                    COL_NAME_EN: str(part.get("name_ru", part.get("name_en", ""))).strip(),
+                    COL_NAME_RU: str(part.get("name_ru", "")).strip(),
+                    COL_NAME_EN: str(part.get("name_en", "")).strip(),
                     COL_QTY: float(part.get("qty", 0) or 0),
                     COL_CARD_NUMBER: card_number,
                 }
@@ -694,21 +704,24 @@ def _aggregate_cards_data(records: list[dict[str, Any]]) -> pd.DataFrame:
     """
     if not records:
         return pd.DataFrame(
-            columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
+            columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_RU, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
         )
 
     df = pd.DataFrame(records)
 
+    agg_cols = {
+        COL_NAME_CN: "first",
+        COL_NAME_EN: "first",
+        COL_QTY: "sum",
+        COL_CARD_NUMBER: _join_card_numbers,
+    }
+    # Include name_ru if present in the data
+    if COL_NAME_RU in df.columns:
+        agg_cols[COL_NAME_RU] = "first"
+
     agg = (
         df.groupby(COL_PART_NO, as_index=False, sort=False)
-        .agg(
-            {
-                COL_NAME_CN: "first",
-                COL_NAME_EN: "first",
-                COL_QTY: "sum",
-                COL_CARD_NUMBER: _join_card_numbers,
-            }
-        )
+        .agg(agg_cols)
         .reset_index(drop=True)
     )
     return agg
