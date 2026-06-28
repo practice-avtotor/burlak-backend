@@ -193,6 +193,7 @@ def _update_job(job_id: int, **fields: Any) -> None:
     now = datetime.now(UTC).isoformat()
     conn = _get_conn()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         set_clauses = [f"{k} = ?" for k in fields]
         set_clauses.append("updated_at = ?")
         values = list(fields.values()) + [now, job_id]
@@ -201,6 +202,9 @@ def _update_job(job_id: int, **fields: Any) -> None:
             values,
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
