@@ -121,7 +121,7 @@ def test_celery_pipeline_success(temp_db_path: str, mock_storage_path: Path) -> 
 
     # Assert job is done
     assert job["status"] == "done"
-    assert job["stage"] is None or job["stage"] == ""
+    assert job["stage"] == "completed"
     assert job["total"] == 2
     assert job["processed"] == 2
     assert job["failed"] == 0
