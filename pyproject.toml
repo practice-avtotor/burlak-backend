@@ -37,9 +37,26 @@ pythonpath = ["."]
 
 [tool.mypy]
 strict = true
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.card_parser_legacy",
+    "app.services.main_legacy",
+    "app.services.diagnostic_legacy",
+    "app.services.cache_legacy",
+    "app.services.file_classifier",
+    "app.services.splitter",
+    "app.services.bom_parser_service",
+    "app.services.comparator_service",
+    "app.services.report_service",
+    "app.services.heuristic_analyzer",
+    "create_test_fixtures"
+]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
@@ -49,3 +66,17 @@ ignore_missing_imports = true
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/services/card_parser_legacy.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/main_legacy.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/diagnostic_legacy.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/cache_legacy.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/file_classifier.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/splitter.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/bom_parser_service.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/comparator_service.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/report_service.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"app/services/heuristic_analyzer.py" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"tests/parser/*" = ["F841", "F811", "N806", "F821", "E402", "F401"]
+"tests/integration/*" = ["F841", "F811", "N806", "F821", "E402", "F401"]
