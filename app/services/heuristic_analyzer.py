@@ -2071,8 +2071,6 @@ class HeuristicAnalyzer:
 
         return None
 
-        return False
-
     @staticmethod
     def extract_operation_name(ws: Any, table_header_row: int) -> str:
         """Извлечь название операции из шапки листа (выше таблицы деталей).

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+
+from app.services.splitter import SplitStatistics
 
 
 @dataclass
@@ -58,4 +59,4 @@ class CardsData:
     corrupted_files: list[str] = field(default_factory=list)
     corrupted_files_detailed: list[dict[str, str]] = field(default_factory=list)
     total_tables_extracted: int = 0  # Количество таблиц (операций) во всех листах
-    split_stats: Any = None
+    split_stats: SplitStatistics | None = None

@@ -258,6 +258,7 @@ class CardParserService:
             )
 
         return self._parse_operational_card(data, filename)
+
     # ------------------------------------------------------------------
     # Internal helpers
 
@@ -286,11 +287,24 @@ class CardParserService:
         aggregated: dict[str, float] = {}
         original_pns: dict[str, str] = {}
         sheets_parsed = 0
+        validation_error: str | None = None
 
         wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
         try:
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
+                # Validate column indices against max_column
+                if ws.max_column:
+                    if part_no_col > ws.max_column:
+                        validation_error = f"part_no column index {part_no_col} exceeds sheet max column {ws.max_column}"
+                        break
+                    if qty_col > 0 and qty_col > ws.max_column:
+                        validation_error = f"qty column index {qty_col} exceeds sheet max column {ws.max_column}"
+                        break
+                    if name_col > 0 and name_col > ws.max_column:
+                        validation_error = f"name column index {name_col} exceeds sheet max column {ws.max_column}"
+                        break
+
                 sheet_parts = self._extract_parts_from_sheet(
                     ws,
                     sheet_name,
@@ -308,6 +322,35 @@ class CardParserService:
                         aggregated[norm_pn] = aggregated.get(norm_pn, 0.0) + p.quantity
                         if norm_pn not in original_pns:
                             original_pns[norm_pn] = p.part_number
+
+            # Check if 0 parts were parsed from sheets that have substantial content
+            if not parts and not validation_error:
+                has_content = False
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    non_empty_rows = 0
+                    max_scan = min(ws.max_row or 0, 100)
+                    max_col_check = min(ws.max_column or 0, 20)
+                    for r in range(1, max_scan + 1):
+                        row_has_val = False
+                        for c in range(1, max_col_check + 1):
+                            try:
+                                v = ws.cell(row=r, column=c).value
+                                if v is not None and str(v).strip():
+                                    row_has_val = True
+                                    break
+                            except Exception:
+                                pass
+                        if row_has_val:
+                            non_empty_rows += 1
+                            if non_empty_rows >= 10:
+                                has_content = True
+                                break
+                    if has_content:
+                        break
+
+                if has_content:
+                    validation_error = "No parts extracted from non-empty worksheet. Check mapping config columns."
         finally:
             wb.close()
 
@@ -318,6 +361,7 @@ class CardParserService:
             aggregated_parts=aggregated,
             original_part_numbers=original_pns,
             sheets_parsed=sheets_parsed,
+            error=validation_error,
         )
 
     def _extract_parts_from_sheet(

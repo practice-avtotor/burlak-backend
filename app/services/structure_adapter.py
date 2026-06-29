@@ -143,4 +143,3 @@ class StructureAdapter:
 
         logger.info("Translated %d unique strings", len(translations))
         return translations
-

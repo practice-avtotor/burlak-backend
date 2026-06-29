@@ -155,7 +155,9 @@ def aggregate(self: Task, job_id: int) -> None:
                 integrity.global_issue,
             )
         else:
-            logger.info("BOM discrepancy integrity check passed successfully for job %d", job_id)
+            logger.info(
+                "BOM discrepancy integrity check passed successfully for job %d", job_id
+            )
 
         # 5. Generate Excel and Text report
         diff_path = os.path.join(job_dir, "diff.xlsx")
@@ -175,4 +177,3 @@ def aggregate(self: Task, job_id: int) -> None:
         if self.request.retries >= self.max_retries:
             sync_repository.update_job_status(job_id, "error", "aggregating_failed")
         raise self.retry(exc=exc)
-

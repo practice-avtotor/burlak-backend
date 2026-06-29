@@ -1,0 +1,9 @@
+# Graphify output directory
+graphify-out/
+
+# Tests
+tests/
+create_test_fixtures.py
+
+# Dependency lock file
+uv.lock

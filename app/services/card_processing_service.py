@@ -34,9 +34,14 @@ def extract_card_number(card_path: str) -> str:
 class CardProcessingService:
     """Service to process a single operational card including splitting, translation, and Excel output generation."""
 
-    def __init__(self, job_id: int) -> None:
+    def __init__(
+        self,
+        job_id: int,
+        ml_client: StructureAdapter | None = None,
+    ) -> None:
         self.job_id = job_id
         self.settings = get_settings()
+        self._ml_client = ml_client
 
     def process_card(self, card_path: str) -> None:
         logger.info(f"Processing card for job {self.job_id}: {card_path}")
@@ -194,10 +199,17 @@ class CardProcessingService:
                 sf_translations = {}
                 if sf_unique_chinese_texts:
                     try:
-                        with StructureAdapter(self.settings.ml_service_url) as ml_client:
-                            sf_translations = ml_client.translate_batch(
+                        if self._ml_client:
+                            sf_translations = self._ml_client.translate_batch(
                                 list(sf_unique_chinese_texts)
                             )
+                        else:
+                            with StructureAdapter(
+                                self.settings.ml_service_url
+                            ) as ml_client:
+                                sf_translations = ml_client.translate_batch(
+                                    list(sf_unique_chinese_texts)
+                                )
                     except Exception as e:
                         logger.warning(
                             f"Translation batch failed for split card {sf_name}: {e}"
@@ -266,8 +278,17 @@ class CardProcessingService:
             translations = {}
             if unique_chinese_texts:
                 try:
-                    with StructureAdapter(self.settings.ml_service_url) as ml_client:
-                        translations = ml_client.translate_batch(list(unique_chinese_texts))
+                    if self._ml_client:
+                        translations = self._ml_client.translate_batch(
+                            list(unique_chinese_texts)
+                        )
+                    else:
+                        with StructureAdapter(
+                            self.settings.ml_service_url
+                        ) as ml_client:
+                            translations = ml_client.translate_batch(
+                                list(unique_chinese_texts)
+                            )
                 except Exception as e:
                     logger.warning(
                         f"Translation batch failed for {card_path}: {e}. Falling back to original texts."

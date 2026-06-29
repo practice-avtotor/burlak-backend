@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import sqlite3
 import zipfile
 
 from celery import Task  # type: ignore[import-untyped]
@@ -133,14 +132,4 @@ def _cleanup_translated_dir(translated_cards_dir: str) -> None:
 
 def _count_failed_cards(job_id: int) -> int:
     """Count cards with status 'failed' for the given *job_id*."""
-    db_path = settings.sqlite_db_path
-    conn = sqlite3.connect(db_path, timeout=30.0)
-    try:
-        cursor = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM cards WHERE job_id = ? AND status = 'failed'",
-            (job_id,),
-        )
-        row = cursor.fetchone()
-        return row[0] if row else 0
-    finally:
-        conn.close()
+    return len(sync_repository.get_failed_cards(job_id))

@@ -26,7 +26,7 @@ import re
 import shutil
 import warnings
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 try:
@@ -328,6 +328,16 @@ class TableBoundary:
     source_path: str = ""
     sheet_name: str = ""
     card_label: str = ""
+
+
+@dataclass
+class SplitStatistics:
+    """Статистика разделения листов."""
+
+    openpyxl_fallback_count: int = 0
+    openpyxl_fallback_files: list[str] = field(default_factory=list)
+    copy_fallback_count: int = 0
+    copy_fallback_files: list[str] = field(default_factory=list)
 
 
 class CardSplitter:

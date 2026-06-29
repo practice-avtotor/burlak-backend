@@ -398,6 +398,55 @@ class TestParseCard:
         result = parser.parse_card(data, "001-card.xlsx")
         assert len(result.parts) == 1
 
+    def test_validation_column_index_out_of_bounds(self):
+        """If column index is out of bounds, returns validation error."""
+        cfg = _default_mapping_config()
+        cfg["cards"]["columns"]["part_no"] = 100  # out of bounds
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 1],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is not None
+        assert "exceeds sheet max column" in result.error
+
+    def test_validation_zero_parts_extracted_from_non_empty_sheet(self):
+        """If 0 parts are parsed from a non-empty sheet, returns validation error."""
+        cfg = _default_mapping_config()
+        parser = CardParserService(cfg)
+
+        # Worksheet has content, but all part numbers are invalid (e.g. empty or garbage)
+        # We need at least 10 rows with some content to trigger validation_error
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    ["Some", "Other", "Headers"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert len(result.parts) == 0
+        assert (
+            result.error
+            == "No parts extracted from non-empty worksheet. Check mapping config columns."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════

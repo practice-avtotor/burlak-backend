@@ -298,4 +298,3 @@ def get_failed_cards(job_id: int) -> list[dict[str, str]]:
         ]
     finally:
         conn.close()
-

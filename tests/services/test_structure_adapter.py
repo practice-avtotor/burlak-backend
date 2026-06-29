@@ -240,6 +240,7 @@ class TestStructureAdapterContextManager:
         class MockClient:
             def __init__(self, **kwargs):
                 pass
+
             def close(self):
                 nonlocal close_called
                 close_called = True
@@ -251,4 +252,3 @@ class TestStructureAdapterContextManager:
             assert not close_called
 
         assert close_called
-

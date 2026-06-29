@@ -87,7 +87,6 @@ def analyze_mapping(self: Task, job_id: int) -> None:
         if (
             not mapping_config
             or "bom" not in mapping_config
-
             or "cards" not in mapping_config
         ):
             raise ValueError("ML service returned invalid mapping configuration")
