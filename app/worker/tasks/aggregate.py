@@ -39,12 +39,18 @@ def aggregate(self: Task, job_id: int) -> None:
             raise ValueError(f"Job {job_id} has no bom_path set")
 
         mapping_config = sync_repository.get_mapping_config(job_id)
-        bom_sheets_cfg = None
-        if mapping_config:
-            try:
-                bom_sheets_cfg = mapping_config["bom"]["sheets"]
-            except (KeyError, TypeError):
-                pass
+        if not mapping_config:
+            raise ValueError(f"Mapping configuration not found for job {job_id}")
+
+        try:
+            bom_sheets_cfg = mapping_config["bom"]["sheets"]
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                f"BOM structure configuration is missing or invalid for job {job_id}"
+            ) from exc
+
+        if not bom_sheets_cfg:
+            raise ValueError(f"BOM sheets configuration is empty for job {job_id}")
 
         logger.info("Parsing BOM from %s", bom_path)
         bom = parse_bom(bom_path, sheets_config=bom_sheets_cfg)

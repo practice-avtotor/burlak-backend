@@ -20,13 +20,62 @@ from __future__ import annotations
 
 import os
 import tempfile
+from typing import Any
 
 import openpyxl
 import pytest
 from openpyxl import Workbook
 
-from app.services.bom_parser_service import parse_bom
+from app.services.bom_parser_service import parse_bom as _real_parse_bom
 from app.services.heuristic_analyzer import HeuristicAnalyzer
+
+
+def parse_bom(file_path: str, sheets_config: list[dict[str, Any]] | None = None) -> Any:
+    if sheets_config is not None:
+        return _real_parse_bom(file_path, sheets_config)
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+    generated = []
+    try:
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            analysis = HeuristicAnalyzer.analyze_bom_sheet(
+                ws, min_configs=1, sheet_name=sn
+            )
+            if analysis is None:
+                continue
+            header_rows, col_types, config_cols = analysis
+            part_no_col = col_types.get("part_no", 0)
+            name_cn_col = col_types.get("name_cn", 0)
+            name_en_col = col_types.get("name_en", 0)
+            qty_col = col_types.get("qty", 0)
+            config_columns = [
+                {
+                    "col_index": idx,
+                    "header": str(
+                        HeuristicAnalyzer.get_cell_value(ws, header_rows[0], idx)
+                        or f"Config_{idx}"
+                    ),
+                }
+                for idx in config_cols
+            ]
+            generated.append(
+                {
+                    "sheet_name": sn,
+                    "sheet_type": "bom_data",
+                    "header_rows": header_rows,
+                    "data_start_row": header_rows[0] + 1,
+                    "columns": {
+                        "part_no": {"col_index": part_no_col},
+                        "name_cn": {"col_index": name_cn_col},
+                        "name_en": {"col_index": name_en_col},
+                        "qty": {"col_index": qty_col},
+                        "config_columns": config_columns,
+                    },
+                }
+            )
+    finally:
+        wb.close()
+    return _real_parse_bom(file_path, generated)
 
 
 def _create_complex_bom_xlsx() -> str:

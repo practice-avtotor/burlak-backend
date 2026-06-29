@@ -464,11 +464,31 @@ class TestAggregateIntegration:
         settings.storage_path = str(mock_storage_path)
 
         try:
-            # Set up: update bom_path to point to our test BOM
+            # Set up: update bom_path and mapping_config to point to our test BOM
+            import json
+
+            mapping_cfg = {
+                "bom": {
+                    "sheets": [
+                        {
+                            "sheet_name": "BOM",
+                            "sheet_type": "bom_data",
+                            "header_rows": [1],
+                            "data_start_row": 2,
+                            "columns": {
+                                "part_no": {"col_index": 1, "header": "零件号"},
+                                "qty": {"col_index": 4, "header": "数量"},
+                                "name_cn": {"col_index": 2, "header": "零件名称"},
+                                "name_en": {"col_index": 3, "header": "English Name"},
+                            },
+                        }
+                    ]
+                }
+            }
             conn = sqlite3.connect(temp_db_path)
             conn.execute(
-                "UPDATE jobs SET bom_path = ? WHERE id = ?",
-                (str(sample_bom_path), temp_db_with_job),
+                "UPDATE jobs SET bom_path = ?, mapping_config = ? WHERE id = ?",
+                (str(sample_bom_path), json.dumps(mapping_cfg), temp_db_with_job),
             )
             conn.commit()
             conn.close()

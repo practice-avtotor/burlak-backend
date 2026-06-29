@@ -201,14 +201,14 @@ class CardProcessingService:
                     try:
                         if self._ml_client:
                             sf_translations = self._ml_client.translate_batch(
-                                list(sf_unique_chinese_texts)
+                                list(sf_unique_chinese_texts), target_lang="ru"
                             )
                         else:
                             with StructureAdapter(
                                 self.settings.ml_service_url
                             ) as ml_client:
                                 sf_translations = ml_client.translate_batch(
-                                    list(sf_unique_chinese_texts)
+                                    list(sf_unique_chinese_texts), target_lang="ru"
                                 )
                     except Exception as e:
                         logger.warning(
@@ -280,14 +280,14 @@ class CardProcessingService:
                 try:
                     if self._ml_client:
                         translations = self._ml_client.translate_batch(
-                            list(unique_chinese_texts)
+                            list(unique_chinese_texts), target_lang="ru"
                         )
                     else:
                         with StructureAdapter(
                             self.settings.ml_service_url
                         ) as ml_client:
                             translations = ml_client.translate_batch(
-                                list(unique_chinese_texts)
+                                list(unique_chinese_texts), target_lang="ru"
                             )
                 except Exception as e:
                     logger.warning(

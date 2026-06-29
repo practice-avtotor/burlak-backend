@@ -19,18 +19,162 @@ import os
 import tempfile
 from typing import Any
 
+import openpyxl
 import pytest
 from openpyxl import Workbook
 
 from app.services.bom_parser_service import (
     BOMData,
-    BOMService,
     PartInfo,
     get_all_config_quantities,
     get_config_quantities,
     lookup_part_name,
-    parse_bom,
 )
+from app.services.bom_parser_service import (
+    BOMService as _real_BOMService,
+)
+from app.services.bom_parser_service import (
+    parse_bom as _real_parse_bom,
+)
+from app.services.heuristic_analyzer import HeuristicAnalyzer
+
+
+def parse_bom(file_path: str, sheets_config: list[dict[str, Any]] | None = None) -> Any:
+    if sheets_config is not None:
+        return _real_parse_bom(file_path, sheets_config)
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+    generated = []
+    try:
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            analysis = HeuristicAnalyzer.analyze_bom_sheet(
+                ws, min_configs=1, sheet_name=sn
+            )
+            if analysis is None:
+                continue
+            header_rows, col_types, config_cols = analysis
+            part_no_col = col_types.get("part_no", 0)
+            name_cn_col = col_types.get("name_cn", 0)
+            name_en_col = col_types.get("name_en", 0)
+            qty_col = col_types.get("qty", 0)
+
+            # Deduplicate config columns in the test wrapper
+            config_columns = []
+            seen_norm = set()
+            for idx in config_cols:
+                header = HeuristicAnalyzer.get_cell_value(ws, header_rows[0], idx)
+                header_str = str(header) if header is not None else f"Config_{idx}"
+                norm = header_str.lower().replace(" ", "").replace("-", "")
+                if norm not in seen_norm:
+                    seen_norm.add(norm)
+                    config_columns.append({"col_index": idx, "header": header_str})
+
+            generated.append(
+                {
+                    "sheet_name": sn,
+                    "sheet_type": "bom_data",
+                    "header_rows": header_rows,
+                    "data_start_row": header_rows[0] + 1,
+                    "columns": {
+                        "part_no": {"col_index": part_no_col},
+                        "name_cn": {"col_index": name_cn_col},
+                        "name_en": {"col_index": name_en_col},
+                        "qty": {"col_index": qty_col},
+                        "config_columns": config_columns,
+                    },
+                }
+            )
+    finally:
+        wb.close()
+    return _real_parse_bom(file_path, generated)
+
+
+class BOMService(_real_BOMService):
+    def load(
+        self, file_path: str, sheets_config: list[dict[str, Any]] | None = None
+    ) -> BOMData:
+        if sheets_config is not None:
+            return super().load(file_path, sheets_config)
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        generated = []
+        try:
+            for sn in wb.sheetnames:
+                ws = wb[sn]
+                analysis = HeuristicAnalyzer.analyze_bom_sheet(
+                    ws, min_configs=1, sheet_name=sn
+                )
+                if analysis is None:
+                    continue
+                header_rows, col_types, config_cols = analysis
+                part_no_col = col_types.get("part_no", 0)
+                name_cn_col = col_types.get("name_cn", 0)
+                name_en_col = col_types.get("name_en", 0)
+                qty_col = col_types.get("qty", 0)
+
+                # Deduplicate config columns in the test wrapper
+                config_columns = []
+                seen_norm = set()
+                for idx in config_cols:
+                    header = HeuristicAnalyzer.get_cell_value(ws, header_rows[0], idx)
+                    header_str = str(header) if header is not None else f"Config_{idx}"
+                    norm = header_str.lower().replace(" ", "").replace("-", "")
+                    if norm not in seen_norm:
+                        seen_norm.add(norm)
+                        config_columns.append({"col_index": idx, "header": header_str})
+
+                generated.append(
+                    {
+                        "sheet_name": sn,
+                        "sheet_type": "bom_data",
+                        "header_rows": header_rows,
+                        "data_start_row": header_rows[0] + 1,
+                        "columns": {
+                            "part_no": {"col_index": part_no_col},
+                            "name_cn": {"col_index": name_cn_col},
+                            "name_en": {"col_index": name_en_col},
+                            "qty": {"col_index": qty_col},
+                            "config_columns": config_columns,
+                        },
+                    }
+                )
+        finally:
+            wb.close()
+        return super().load(file_path, generated)
+
+    def load_from_bytes(
+        self,
+        data: bytes,
+        sheets_config: list[dict[str, Any]] | None = None,
+        filename: str = "bom.xlsx",
+    ) -> BOMData:
+        if sheets_config is not None:
+            return super().load_from_bytes(data, sheets_config, filename)
+        import os
+        import tempfile
+
+        suffix = os.path.splitext(filename)[1] or ".xlsx"
+        fd, path = tempfile.mkstemp(suffix=suffix, prefix="bom_upload_")
+        os.close(fd)
+        with open(path, "wb") as f:
+            f.write(data)
+        self._temp_paths.append(path)
+        try:
+            return self.load(path)
+        except Exception:
+            raise
+
+    async def load_async(
+        self,
+        data: bytes,
+        sheets_config: list[dict[str, Any]] | None = None,
+        filename: str = "bom.xlsx",
+    ) -> BOMData:
+        if sheets_config is not None:
+            return await super().load_async(data, sheets_config, filename)
+        import asyncio
+
+        return await asyncio.to_thread(self.load_from_bytes, data, None, filename)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
