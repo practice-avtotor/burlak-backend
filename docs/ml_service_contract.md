@@ -354,6 +354,49 @@ ML-сервис возвращает `mapping_config` — полное опис�
               }
             }
           ]
+        },
+        "card_format_B": {
+          "structure_type": "standard_table",
+          "description": "Технологические карты 工艺卡片. Один файл содержит несколько карт, разделённых пустой строкой.",
+          "card_number_source": "cell",
+          "card_number_pattern": "CM-[A-Z0-9]+",
+          "card_number_confidence": 0.90,
+          "sheets": [
+            {
+              "sheet_name": null,
+              "sheet_type": "card_data",
+              "header_rows": [1],
+              "data_start_row": 2,
+              "columns": {
+                "part_no": {
+                  "col_index": 18,
+                  "header": "零部件代号",
+                  "confidence": 0.95
+                },
+                "name_cn": {
+                  "col_index": 0,
+                  "header": null,
+                  "confidence": 0.0
+                },
+                "qty": {
+                  "col_index": 0,
+                  "header": null,
+                  "confidence": 0.0
+                }
+              },
+              "table_boundaries": {
+                "type": "multi_card",
+                "multi_card": {
+                  "separator_type": "empty_row",
+                  "empty_rows_separator": 1,
+                  "has_repeating_header": true,
+                  "parts_header_row": 21,
+                  "parts_data_start_row": 22,
+                  "max_cards": 0
+                }
+              }
+            }
+          ]
         }
       },
       "file_classification_rules": {
@@ -705,10 +748,34 @@ interface CardSheetMapping {
   
   /** Как определять границы таблицы */
   table_boundaries: {
-    type: "end_markers" | "empty_rows" | "next_header" | "fixed_count";
+    type: "end_markers" | "empty_rows" | "next_header" | "fixed_count" | "multi_card";
     markers?: string[];
     empty_rows_threshold?: number;
     fixed_count?: number;
+
+    /** Конфигурация для multi_card: один лист содержит несколько карт вертикально */
+    multi_card?: {
+      /** Тип разделителя между картами */
+      separator_type: "empty_row" | "marker" | "empty_row_or_marker";
+
+      /** Сколько пустых строк подряд считаются разделителем между картами (по умолчанию 1) */
+      empty_rows_separator?: number;
+
+      /** Маркеры, которые обозначают конец карты */
+      card_end_markers?: string[];
+
+      /** Есть ли у каждой карты свой заголовок (header) */
+      has_repeating_header: boolean;
+
+      /** Строка, где начинается таблица деталей внутри карты (абсолютная, 1-based) */
+      parts_header_row?: number;
+
+      /** Строка, где начинаются данные деталей внутри карты (абсолютная, 1-based) */
+      parts_data_start_row?: number;
+
+      /** Максимальное количество карт (0 = не ограничено) */
+      max_cards?: number;
+    };
   };
 }
 ```
