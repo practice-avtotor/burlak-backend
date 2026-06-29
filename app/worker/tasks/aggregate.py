@@ -16,13 +16,8 @@ from celery import Task  # type: ignore[import-untyped]
 
 from app.core.config import get_settings
 from app.db import sync_repository
-from app.services.bom_parser_service import (
-    CardParseResult,
-    CardPart,
-    CardsData,
-    CardSheetInfo,
-    parse_bom,
-)
+from app.schemas.cards import CardParseResult, CardPart, CardsData, CardSheetInfo
+from app.services.bom_parser_service import parse_bom
 from app.services.comparator_service import compare_all_configs
 from app.services.normalizer import normalize_part_number
 from app.services.report_service import generate_discrepancy_report
@@ -44,8 +39,16 @@ def aggregate(self: Task, job_id: int) -> None:
         if not bom_path:
             raise ValueError(f"Job {job_id} has no bom_path set")
 
-        logger.info("Parsing BOM from %s via legacy parser", bom_path)
-        bom = parse_bom(bom_path)
+        mapping_config = sync_repository.get_mapping_config(job_id)
+        bom_sheets_cfg = None
+        if mapping_config:
+            try:
+                bom_sheets_cfg = mapping_config["bom"]["sheets"]
+            except (KeyError, TypeError):
+                pass
+
+        logger.info("Parsing BOM from %s", bom_path)
+        bom = parse_bom(bom_path, sheets_config=bom_sheets_cfg)
         logger.info(
             "BOM parsed: %d parts, %d configs", len(bom.parts), len(bom.config_names)
         )
