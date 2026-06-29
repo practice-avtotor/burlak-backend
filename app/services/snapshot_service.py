@@ -28,7 +28,7 @@ _MAX_COLUMNS = 200
 def extract_snapshot_from_bytes(
     data: bytes,
     filename: str,
-    max_rows: int = 50,
+    max_rows: int = 300,
 ) -> dict[str, Any]:
     """Extract a compact JSON snapshot of an XLSX workbook from raw bytes.
 

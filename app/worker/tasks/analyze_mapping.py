@@ -30,7 +30,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
         with open(bom_path, "rb") as f:
             bom_data = f.read()
         bom_snapshot = extract_snapshot_from_bytes(
-            bom_data, os.path.basename(bom_path), max_rows=50
+            bom_data, os.path.basename(bom_path), max_rows=300
         )
         bom_snapshot["format_group"] = "BOM_standard"
 
@@ -59,7 +59,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                 try:
                     card_data = zf.read(representative_path)
                     snapshot = extract_snapshot_from_bytes(
-                        card_data, os.path.basename(representative_path), max_rows=50
+                        card_data, os.path.basename(representative_path), max_rows=300
                     )
                     snapshot["format_group"] = group_name
                     card_snapshots.append(snapshot)
@@ -76,7 +76,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
             "bom": [bom_snapshot],
             "sample_cards": card_snapshots,
             "options": {
-                "max_sample_rows": 50,
+                "max_sample_rows": 300,
                 "total_cards_in_archive": len(card_paths),
             },
         }
