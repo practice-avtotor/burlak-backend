@@ -20,12 +20,12 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.bom_parser_service import BOMData, PartInfo
-from app.services.card_parser_legacy import (
+from app.schemas.cards import (
     CardParseResult,
     CardPart,
     CardsData,
 )
+from app.services.bom_parser_service import BOMData, PartInfo
 from app.services.comparator_service import (
     ConfigComparisonResult,
     Discrepancy,

@@ -20,8 +20,8 @@ from typing import Any
 import openpyxl
 import pytest
 
+from app.schemas.cards import CardsData
 from app.services.bom_parser_service import BOMData, PartInfo
-from app.services.card_parser_legacy import CardsData
 from app.services.comparator_service import (
     ConfigComparisonResult,
     Discrepancy,

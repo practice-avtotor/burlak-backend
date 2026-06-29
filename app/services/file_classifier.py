@@ -138,7 +138,6 @@ def classify_file(file_path: str) -> FileClassification:
 
     # Пытаемся извлечь номер операции из имени файла
     operation_number = _extract_operation_number(file_name)
-    bool(operation_number)
 
     # Определяем тип файла
     if is_service_file:
