@@ -424,6 +424,22 @@ class TestSyncRepository:
         finally:
             settings.db_url = original
 
+    def test_get_failed_cards(self, temp_db_with_failed_cards: int, temp_db_path: str):
+        """get_failed_cards should return all failed card paths and error messages."""
+        from app.db.sync_repository import get_failed_cards
+
+        settings = get_settings()
+        original = settings.db_url
+        settings.db_url = temp_db_path
+        try:
+            failed_cards = get_failed_cards(temp_db_with_failed_cards)
+            assert len(failed_cards) == 1
+            assert failed_cards[0]["card_path"] == "cards/CARD-002.xlsx"
+            assert failed_cards[0]["error_message"] == "Parse error: invalid format"
+        finally:
+            settings.db_url = original
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Integration Tests

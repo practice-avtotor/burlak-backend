@@ -19,7 +19,8 @@ import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-from app.services.bom_parser_service import BOMData, CardsData, PartInfo
+from app.schemas.cards import CardsData
+from app.services.bom_parser_service import BOMData, PartInfo
 from app.services.fuzzy_matcher import FuzzyMatcher
 from app.services.normalizer import is_valid_part_number, normalize_part_number
 

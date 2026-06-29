@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
 from pathlib import Path
 
 from celery import Task  # type: ignore[import-untyped]
@@ -18,7 +17,7 @@ from app.core.config import get_settings
 from app.db import sync_repository
 from app.schemas.cards import CardParseResult, CardPart, CardsData, CardSheetInfo
 from app.services.bom_parser_service import parse_bom
-from app.services.comparator_service import compare_all_configs
+from app.services.comparator_service import compare_all_configs, verify_integrity
 from app.services.normalizer import normalize_part_number
 from app.services.report_service import generate_discrepancy_report
 from app.worker.celery_app import celery_app
@@ -129,7 +128,7 @@ def aggregate(self: Task, job_id: int) -> None:
         )
 
         # 3. Load failed/corrupted cards from DB and append to cards_data
-        failed_cards = _get_failed_cards(job_id)
+        failed_cards = sync_repository.get_failed_cards(job_id)
         cards_data.corrupted_files = [fc["card_path"] for fc in failed_cards]
         cards_data.corrupted_files_detailed = [
             {"file": fc["card_path"], "error": fc["error_message"]}
@@ -145,6 +144,18 @@ def aggregate(self: Task, job_id: int) -> None:
         # 4. Compare all configs
         logger.info("Comparing BOM vs Cards via legacy matching engine")
         result = compare_all_configs(bom, cards_data, use_fuzzy=True)
+
+        # 4b. Verify integrity of matching results
+        integrity = verify_integrity(result)
+        if not integrity.is_ok:
+            logger.warning(
+                "BOM discrepancy integrity check failed for job %d: config_issues=%s, global_issue=%s",
+                job_id,
+                integrity.config_issues,
+                integrity.global_issue,
+            )
+        else:
+            logger.info("BOM discrepancy integrity check passed successfully for job %d", job_id)
 
         # 5. Generate Excel and Text report
         diff_path = os.path.join(job_dir, "diff.xlsx")
@@ -165,21 +176,3 @@ def aggregate(self: Task, job_id: int) -> None:
             sync_repository.update_job_status(job_id, "error", "aggregating_failed")
         raise self.retry(exc=exc)
 
-
-def _get_failed_cards(job_id: int) -> list[dict[str, str]]:
-    """Fetch failed cards from DB using a direct SQLite query."""
-    db_path = settings.sqlite_db_path
-    conn = sqlite3.connect(db_path, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        cursor = conn.execute(
-            "SELECT card_path, error_message FROM cards WHERE job_id = ? AND status = 'failed'",
-            (job_id,),
-        )
-        rows = cursor.fetchall()
-        return [
-            {"card_path": r["card_path"], "error_message": r["error_message"] or ""}
-            for r in rows
-        ]
-    finally:
-        conn.close()

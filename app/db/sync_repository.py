@@ -281,3 +281,21 @@ def set_job_status(job_id: int, status: str) -> None:
 def set_job_error(job_id: int, error_message: str) -> None:
     """Set job status to 'error'. Preserves current stage for debugging."""
     _update_job(job_id, status="error")
+
+
+def get_failed_cards(job_id: int) -> list[dict[str, str]]:
+    """Fetch failed cards for a job synchronously (WAL-safe)."""
+    conn = _get_conn()
+    try:
+        cursor = conn.execute(
+            "SELECT card_path, error_message FROM cards WHERE job_id = ? AND status = 'failed'",
+            (job_id,),
+        )
+        rows = cursor.fetchall()
+        return [
+            {"card_path": r["card_path"], "error_message": r["error_message"] or ""}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
