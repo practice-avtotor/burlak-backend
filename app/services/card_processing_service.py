@@ -4,7 +4,6 @@ import io
 import json
 import logging
 import os
-import re
 import traceback
 import zipfile
 
@@ -16,6 +15,7 @@ from app.services.card_parser_service import (
     _DEFAULT_SERVICE_KEYWORDS,
     CardParserService,
 )
+from app.services.heuristic_analyzer import extract_card_number_from_filepath
 from app.services.splitter import CardSplitter
 from app.services.structure_adapter import StructureAdapter
 from app.services.xls_converter import convert_xls_to_xlsx
@@ -28,19 +28,7 @@ def extract_card_number(card_path: str) -> str:
 
     Fallback to basename without extension.
     """
-    basename = os.path.basename(card_path)
-    name_no_ext, _ = os.path.splitext(basename)
-
-    # Try typical prefix-AS-number pattern
-    match = re.match(r"^([a-zA-Z0-9]+-AS-[0-9]+)", name_no_ext, re.IGNORECASE)
-    if match:
-        return match.group(1)
-
-    match = re.match(r"^([a-zA-Z0-9]+-[0-9]+)", name_no_ext)
-    if match:
-        return match.group(1)
-
-    return name_no_ext
+    return extract_card_number_from_filepath(card_path)
 
 
 class CardProcessingService:
@@ -205,11 +193,11 @@ class CardProcessingService:
                 # Translate
                 sf_translations = {}
                 if sf_unique_chinese_texts:
-                    ml_client = StructureAdapter(self.settings.ml_service_url)
                     try:
-                        sf_translations = ml_client.translate_batch(
-                            list(sf_unique_chinese_texts)
-                        )
+                        with StructureAdapter(self.settings.ml_service_url) as ml_client:
+                            sf_translations = ml_client.translate_batch(
+                                list(sf_unique_chinese_texts)
+                            )
                     except Exception as e:
                         logger.warning(
                             f"Translation batch failed for split card {sf_name}: {e}"
@@ -277,9 +265,9 @@ class CardProcessingService:
             # Translate Chinese names
             translations = {}
             if unique_chinese_texts:
-                ml_client = StructureAdapter(self.settings.ml_service_url)
                 try:
-                    translations = ml_client.translate_batch(list(unique_chinese_texts))
+                    with StructureAdapter(self.settings.ml_service_url) as ml_client:
+                        translations = ml_client.translate_batch(list(unique_chinese_texts))
                 except Exception as e:
                     logger.warning(
                         f"Translation batch failed for {card_path}: {e}. Falling back to original texts."

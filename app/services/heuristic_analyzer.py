@@ -1082,6 +1082,10 @@ class HeuristicAnalyzer:
         if cache_key in cls._merged_cell_cache:
             return cls._merged_cell_cache[cache_key]
 
+        # Prevent unbounded class-level cache growth
+        if len(cls._merged_cell_cache) >= 500:
+            cls._merged_cell_cache.clear()
+
         merged_map: dict[tuple[int, int], tuple[int, int]] = {}
         try:
             ranges = ws.merged_cells.ranges

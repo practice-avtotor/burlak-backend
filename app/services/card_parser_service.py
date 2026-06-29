@@ -258,62 +258,9 @@ class CardParserService:
             )
 
         return self._parse_operational_card(data, filename)
-
-    def extract_unique_strings(self, data: bytes, filename: str) -> list[str]:
-        """Extract unique translatable strings from an operational card.
-
-        Reads the name column (and any other text columns) to build a
-        deduplicated list of Chinese strings suitable for batch translation.
-
-        Args:
-            data: Raw bytes of the XLSX file.
-            filename: Original filename.
-
-        Returns:
-            Deduplicated list of non-empty strings from the name column.
-        """
-        file_type = self.classify(filename)
-        if file_type != "operational_card":
-            return []
-
-        name_col = self._columns.get("name", 0)
-        if name_col <= 0:
-            return []
-
-        header_row = self._header_row
-        data_start = self._table_boundaries.get("data_start_row", header_row + 1)
-        end_markers: list[str] = self._table_boundaries.get("end_markers", [])
-
-        seen: set[str] = set()
-        result: list[str] = []
-
-        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-        try:
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                for row in ws.iter_rows(min_row=data_start, max_col=name_col):
-                    if not row or len(row) < name_col:
-                        continue
-                    cell = row[name_col - 1]
-                    val = cell.value
-                    if val is None:
-                        continue
-                    text = str(val).strip()
-                    if not text:
-                        continue
-                    # Stop at end markers
-                    if any(marker in text for marker in end_markers):
-                        break
-                    if text not in seen:
-                        seen.add(text)
-                        result.append(text)
-        finally:
-            wb.close()
-
-        return result
-
     # ------------------------------------------------------------------
     # Internal helpers
+
     # ------------------------------------------------------------------
 
     def _parse_operational_card(self, data: bytes, filename: str) -> CardParseResult:
