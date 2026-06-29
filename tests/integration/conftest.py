@@ -5,7 +5,6 @@ Mocks Redis connections so integration tests don't need a running Redis instance
 
 from unittest.mock import AsyncMock, patch
 
-import fakeredis.aioredis
 import pytest
 
 
@@ -18,6 +17,7 @@ def _mock_redis_for_integration():
     interfering with backend tests that manage their own Redis mocks.
     """
     import fakeredis
+
     fake_client = fakeredis.aioredis.FakeRedis()
     fake_sync_client = fakeredis.FakeRedis()
     mock_pool = AsyncMock()
@@ -30,12 +30,8 @@ def _mock_redis_for_integration():
         patch("app.core.redis._sync_client", fake_sync_client),
         patch("app.core.redis.get_sync_redis", return_value=fake_sync_client),
         patch("app.core.redis.close_sync_redis"),
-        patch(
-            "app.services.cache_service.get_redis", return_value=fake_client
-        ),
-        patch(
-            "app.services.notification_service.get_redis", return_value=fake_client
-        ),
+        patch("app.services.cache_service.get_redis", return_value=fake_client),
+        patch("app.services.notification_service.get_redis", return_value=fake_client),
         patch(
             "app.core.redis.check_redis_health",
             return_value={"redis": "healthy", "redis_version": "7.0.0"},

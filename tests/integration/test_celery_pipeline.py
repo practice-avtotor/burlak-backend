@@ -90,24 +90,44 @@ def test_celery_pipeline_success(temp_db_path: str, mock_storage_path: Path) -> 
     mock_mapping_config = {
         "bom": {
             "columns": {"part_no": 2, "qty": 4, "name": 3},
-            "table_boundaries": {"header_row": 1, "data_start_row": 2, "end_markers": ["END"]},
+            "table_boundaries": {
+                "header_row": 1,
+                "data_start_row": 2,
+                "end_markers": ["END"],
+            },
         },
         "cards": {
             "columns": {"part_no": 2, "qty": 4, "name": 3},
-            "table_boundaries": {"header_row": 1, "data_start_row": 2, "end_markers": ["END"]},
+            "table_boundaries": {
+                "header_row": 1,
+                "data_start_row": 2,
+                "end_markers": ["END"],
+            },
             "file_classification_rules": {
                 "operational_card_patterns": [
-                    {"type": "filename_regex", "pattern": ".*-AS-.*", "format_group": "card_format_A"}
+                    {
+                        "type": "filename_regex",
+                        "pattern": ".*-AS-.*",
+                        "format_group": "card_format_A",
+                    }
                 ],
                 "service_file_patterns": [
                     {"type": "filename_keyword", "keywords": ["Cover", "封面", "目录"]}
-                ]
-            }
-        }
+                ],
+            },
+        },
     }
 
-    with patch("app.services.structure_adapter.StructureAdapter.analyze_structure", return_value=mock_mapping_config) as mock_analyze, \
-         patch("app.services.structure_adapter.StructureAdapter.translate_batch", return_value={"螺栓M6×20": "Bolt M6x20"}) as mock_translate:
+    with (
+        patch(
+            "app.services.structure_adapter.StructureAdapter.analyze_structure",
+            return_value=mock_mapping_config,
+        ) as mock_analyze,
+        patch(
+            "app.services.structure_adapter.StructureAdapter.translate_batch",
+            return_value={"螺栓M6×20": "Bolt M6x20"},
+        ),
+    ):
         unpack.delay(job_id)
 
         # Assert ML client was invoked

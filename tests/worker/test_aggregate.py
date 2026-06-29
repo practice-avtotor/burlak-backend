@@ -108,9 +108,21 @@ def sample_mapping_config() -> dict:
                     "header_rows": [1],
                     "data_start_row": 2,
                     "columns": {
-                        "part_no": {"col_index": 2, "header": "零件号", "confidence": 0.98},
-                        "name_cn": {"col_index": 3, "header": "零件名称", "confidence": 0.95},
-                        "name_en": {"col_index": 4, "header": "零件名称(英文)", "confidence": 0.92},
+                        "part_no": {
+                            "col_index": 2,
+                            "header": "零件号",
+                            "confidence": 0.98,
+                        },
+                        "name_cn": {
+                            "col_index": 3,
+                            "header": "零件名称",
+                            "confidence": 0.95,
+                        },
+                        "name_en": {
+                            "col_index": 4,
+                            "header": "零件名称(英文)",
+                            "confidence": 0.92,
+                        },
                         "qty": {"col_index": 5, "header": "用量", "confidence": 0.97},
                     },
                 }
@@ -274,7 +286,13 @@ class TestComparisonService:
         df = ComparisonService.load_cards_data(job_dir_with_cards)
         assert isinstance(df, pd.DataFrame)
         assert not df.empty
-        assert list(df.columns) == ["part_no", "name_cn", "name_en", "qty", "card_number"]
+        assert list(df.columns) == [
+            "part_no",
+            "name_cn",
+            "name_en",
+            "qty",
+            "card_number",
+        ]
 
         # P001 appears in both cards: 5 + 5 = 10
         p001 = df[df["part_no"] == "P001"].iloc[0]
@@ -431,7 +449,15 @@ class TestComparisonService:
     def test_generate_report_with_failed_cards(self, tmp_path: Path):
         """generate_report should include failed cards sheet."""
         discrepancies = pd.DataFrame(
-            columns=["part_no", "name_cn", "name_en", "qty_bom", "qty_cards", "diff", "type"]
+            columns=[
+                "part_no",
+                "name_cn",
+                "name_en",
+                "qty_bom",
+                "qty_cards",
+                "diff",
+                "type",
+            ]
         )
         result = {
             "discrepancies": discrepancies,
@@ -595,7 +621,9 @@ class TestSyncRepository:
         finally:
             settings.db_url = original
 
-    def test_get_mapping_config_with_value(self, temp_db_with_job: int, temp_db_path: str):
+    def test_get_mapping_config_with_value(
+        self, temp_db_with_job: int, temp_db_path: str
+    ):
         """get_mapping_config should return parsed JSON."""
         settings = get_settings()
         original = settings.db_url
@@ -625,7 +653,9 @@ class TestSyncRepository:
 
             conn = sqlite3.connect(temp_db_path)
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT status, stage FROM jobs WHERE id = ?", (temp_db_with_job,)).fetchone()
+            row = conn.execute(
+                "SELECT status, stage FROM jobs WHERE id = ?", (temp_db_with_job,)
+            ).fetchone()
             conn.close()
 
             assert row["status"] == "done"
@@ -669,6 +699,7 @@ class TestAggregateIntegration:
 
             # Copy card JSONs to the mock storage job dir
             import shutil
+
             job_dir = mock_storage_path / str(temp_db_with_job)
             job_dir.mkdir(parents=True, exist_ok=True)
             for f in job_dir_with_cards.iterdir():
@@ -715,6 +746,7 @@ class TestAggregateIntegration:
         try:
             # Copy translated cards to mock storage
             import shutil
+
             job_dir = mock_storage_path / str(temp_db_with_job)
             if job_dir.exists():
                 shutil.rmtree(str(job_dir))
@@ -767,6 +799,7 @@ class TestAggregateIntegration:
 
         try:
             import shutil
+
             job_dir = mock_storage_path / str(temp_db_with_failed_cards)
             if job_dir.exists():
                 shutil.rmtree(str(job_dir))
