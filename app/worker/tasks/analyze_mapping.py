@@ -70,7 +70,6 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                     # We still want to try to run ML analysis if possible with other cards
 
         # 5. Invoke ML Service to get mapping config
-        ml_client = StructureAdapter(settings.ml_service_url)
         logger.info(f"Invoking ML analyze-structure endpoint for job {job_id}")
 
         payload = {
@@ -81,12 +80,14 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                 "total_cards_in_archive": len(card_paths),
             },
         }
-        response = ml_client.analyze_structure(payload)
+        with StructureAdapter(settings.ml_service_url) as ml_client:
+            response = ml_client.analyze_structure(payload)
 
         mapping_config = response.get("mapping_config", response)
         if (
             not mapping_config
             or "bom" not in mapping_config
+
             or "cards" not in mapping_config
         ):
             raise ValueError("ML service returned invalid mapping configuration")

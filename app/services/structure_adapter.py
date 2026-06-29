@@ -44,6 +44,18 @@ class StructureAdapter:
     def __init__(self, base_url: str, timeout: float = _DEFAULT_TIMEOUT) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._client = httpx.Client(timeout=timeout)
+
+    def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if hasattr(self._client, "close"):
+            self._client.close()
+
+    def __enter__(self) -> StructureAdapter:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     # Public API
@@ -67,9 +79,8 @@ class StructureAdapter:
         url = f"{self._base_url}/api/v1/analyze-structure"
         logger.info("Calling ML analyze-structure at %s", url)
 
-        with httpx.Client(timeout=self._timeout) as client:
-            response = client.post(url, json=snapshot)
-            response.raise_for_status()
+        response = self._client.post(url, json=snapshot)
+        response.raise_for_status()
 
         result: dict[str, Any] = response.json()
         logger.info("Received mapping_config with %d keys", len(result))
@@ -104,32 +115,32 @@ class StructureAdapter:
         url = f"{self._base_url}/api/v1/translate"
         translations: dict[str, str] = {}
 
-        with httpx.Client(timeout=self._timeout) as client:
-            for i in range(0, len(texts), _TRANSLATE_BATCH_SIZE):
-                chunk = texts[i : i + _TRANSLATE_BATCH_SIZE]
-                logger.info(
-                    "Translating batch %d/%d (%d texts)",
-                    i // _TRANSLATE_BATCH_SIZE + 1,
-                    -(-len(texts) // _TRANSLATE_BATCH_SIZE),
-                    len(chunk),
-                )
+        for i in range(0, len(texts), _TRANSLATE_BATCH_SIZE):
+            chunk = texts[i : i + _TRANSLATE_BATCH_SIZE]
+            logger.info(
+                "Translating batch %d/%d (%d texts)",
+                i // _TRANSLATE_BATCH_SIZE + 1,
+                -(-len(texts) // _TRANSLATE_BATCH_SIZE),
+                len(chunk),
+            )
 
-                response = client.post(
-                    url,
-                    json={
-                        "texts": chunk,
-                        "source_lang": source_lang,
-                        "target_lang": target_lang,
-                    },
-                )
-                response.raise_for_status()
+            response = self._client.post(
+                url,
+                json={
+                    "texts": chunk,
+                    "source_lang": source_lang,
+                    "target_lang": target_lang,
+                },
+            )
+            response.raise_for_status()
 
-                data: dict[str, Any] = response.json()
-                batch_translations: list[str] = data.get("translations", [])
+            data: dict[str, Any] = response.json()
+            batch_translations: list[str] = data.get("translations", [])
 
-                # Pair source texts with translations
-                for src, translated in zip(chunk, batch_translations):
-                    translations[src] = translated
+            # Pair source texts with translations
+            for src, translated in zip(chunk, batch_translations):
+                translations[src] = translated
 
         logger.info("Translated %d unique strings", len(translations))
         return translations
+

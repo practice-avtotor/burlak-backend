@@ -230,3 +230,25 @@ class TestTranslateBatch:
         adapter.translate_batch(["hello"], source_lang="en", target_lang="ru")
         assert captured_json["source_lang"] == "en"
         assert captured_json["target_lang"] == "ru"
+
+
+class TestStructureAdapterContextManager:
+    def test_context_manager_and_close(self, monkeypatch):
+        """Context manager correctly enters, exits, and closes connection."""
+        close_called = False
+
+        class MockClient:
+            def __init__(self, **kwargs):
+                pass
+            def close(self):
+                nonlocal close_called
+                close_called = True
+
+        monkeypatch.setattr("app.services.structure_adapter.httpx.Client", MockClient)
+
+        with StructureAdapter("http://ml-service:8000") as adapter:
+            assert isinstance(adapter, StructureAdapter)
+            assert not close_called
+
+        assert close_called
+
