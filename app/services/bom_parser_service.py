@@ -30,6 +30,7 @@ from typing import Any
 
 import openpyxl
 
+from app.schemas.cards import CardParseResult, CardPart, CardsData, CardSheetInfo
 from app.services.heuristic_analyzer import (
     NAME_KEYWORDS,
     QTY_KEYWORDS,
@@ -41,6 +42,19 @@ from app.services.normalizer import (
     is_valid_part_number,
     normalize_quantity,
 )
+
+
+def _get_col_index(col_config: Any) -> int:
+    """Helper to extract integer column index from a flat or nested col configuration."""
+    if isinstance(col_config, dict):
+        return int(col_config.get("col_index", 0))
+    elif col_config is not None:
+        try:
+            return int(col_config)
+        except (ValueError, TypeError):
+            return 0
+    return 0
+
 
 # Листы с мета-именами, которые НЕ создают конфигурации (单车用量, 发动机附件 и т.д.)
 _NON_CONFIG_SHEET_KEYWORDS = (
@@ -169,7 +183,9 @@ def _detect_multi_block_layout(
     return blocks
 
 
-def parse_bom(file_path: str) -> BOMData:
+def parse_bom(
+    file_path: str, sheets_config: list[dict[str, Any]] | None = None
+) -> BOMData:
     """Разобрать BOM-файл и вернуть структурированные данные.
 
     Алгоритм SWM multi-sheet BOM:
@@ -233,6 +249,13 @@ def parse_bom(file_path: str) -> BOMData:
     _SWM_COMBINED_CONFIG = "SWM_COMBINED"
     _swm_multisheet_sheets: list[str] = []  # собираем имена для логирования
 
+    cfg_by_sheet: dict[str, dict[str, Any]] = {}
+    if sheets_config:
+        for cfg in sheets_config:
+            s_name = cfg.get("sheet_name")
+            if s_name:
+                cfg_by_sheet[s_name] = cfg
+
     try:
         sheet_names = wb.sheetnames
 
@@ -255,31 +278,73 @@ def parse_bom(file_path: str) -> BOMData:
                     ws.max_column,
                 )
 
-                # Анализируем лист одним вызовом (без дублирования)
-                # min_configs=1: поддержка SWM-стиля листов (总装/涂装/焊装) с 0-1 конфиг-колонками
-                analysis = HeuristicAnalyzer.analyze_bom_sheet(
-                    ws,
-                    min_configs=1,
-                    sheet_name=sheet_name,
-                )
-                if analysis is None:
-                    logger.info(
-                        "Лист не является BOM-кандидатом, пропуск: %s", sheet_name
-                    )
-                    continue
+                if sheets_config:
+                    cfg = cfg_by_sheet.get(sheet_name)
+                    if not cfg or cfg.get("sheet_type") != "bom_data":
+                        logger.info(
+                            "Лист не является BOM-данными согласно config, пропуск: %s",
+                            sheet_name,
+                        )
+                        continue
 
-                header_rows, col_types, config_cols = analysis
-                part_no_col = col_types.get("part_no", 0)
-                name_cn_col = col_types.get("name_cn", 0)
-                name_en_col = col_types.get("name_en", 0)
+                    columns_cfg = cfg.get("columns", {})
+                    part_no_col = _get_col_index(columns_cfg.get("part_no"))
+                    name_cn_col = _get_col_index(columns_cfg.get("name_cn"))
+                    name_en_col = _get_col_index(columns_cfg.get("name_en"))
+                    qty_col = _get_col_index(columns_cfg.get("qty"))
+
+                    header_rows = cfg.get("header_rows", [1])
+                    header_row = header_rows[0] if header_rows else 1
+                    data_start = cfg.get("data_start_row", header_row + 1)
+
+                    config_cols = []
+                    config_names = []
+                    config_cols_info = columns_cfg.get("config_columns", [])
+                    for col_info in config_cols_info:
+                        col_idx = _get_col_index(col_info)
+                        if col_idx > 0:
+                            name = col_info.get("header")
+                            if not name:
+                                name = HeuristicAnalyzer.get_cell_value(
+                                    ws, header_row, col_idx
+                                )
+                            name_str = str(name) if name is not None else ""
+                            name_str = (
+                                name_str.replace("\n", " ").replace("\r", "").strip()
+                            )
+                            if not name_str:
+                                name_str = f"Config_{col_idx}"
+                            config_cols.append(col_idx)
+                            config_names.append(name_str)
+                else:
+                    # Анализируем лист одним вызовом (без дублирования)
+                    # min_configs=1: поддержка SWM-стиля листов (总装/涂装/焊装) с 0-1 конфиг-колонками
+                    analysis = HeuristicAnalyzer.analyze_bom_sheet(
+                        ws,
+                        min_configs=1,
+                        sheet_name=sheet_name,
+                    )
+                    if analysis is None:
+                        logger.info(
+                            "Лист не является BOM-кандидатом, пропуск: %s", sheet_name
+                        )
+                        continue
+
+                    header_rows, col_types, config_cols = analysis
+                    part_no_col = col_types.get("part_no", 0)
+                    name_cn_col = col_types.get("name_cn", 0)
+                    name_en_col = col_types.get("name_en", 0)
+                    qty_col = (
+                        0  # will be overridden below if qty_col is found in col_types
+                    )
+                    header_row = header_rows[0]
+                    data_start = header_row + 1
 
                 if part_no_col == 0:
                     logger.warning(
                         "Не найдена колонка парт-номеров в листе: %s", sheet_name
                     )
                     continue
-
-                header_row = header_rows[0]
 
                 # ── 3. Строим ГЛОБАЛЬНЫЙ словарь названий (ВСЕ строки, ВСЕ листы) ──
                 sheet_names_dict = HeuristicAnalyzer.build_global_name_dict(
@@ -301,12 +366,16 @@ def parse_bom(file_path: str) -> BOMData:
                         all_global_names[pn] = (existing_cn, existing_en)
 
                 # ── 4. Определяем колонки комплектаций (уже из analysis) ──
-                qty_col = col_types.get("qty", 0)
+                if not sheets_config:
+                    qty_col = col_types.get("qty", 0)
 
                 # ── 5. Если есть отдельная qty-колонка (спец-листы 附件 или SWM multi-sheet) ──
-                is_non_config_sheet = any(
-                    kw in sheet_name for kw in _NON_CONFIG_SHEET_KEYWORDS
-                )
+                if sheets_config:
+                    is_non_config_sheet = False
+                else:
+                    is_non_config_sheet = any(
+                        kw in sheet_name for kw in _NON_CONFIG_SHEET_KEYWORDS
+                    )
 
                 # Определяем, является ли это SWM-стилем листа (总装/涂装/焊装)
                 # Такие листы агрегируются в ЕДИНЫЙ конфиг, а не создают отдельные конфиги
@@ -320,7 +389,8 @@ def parse_bom(file_path: str) -> BOMData:
                     and qty_col > 0
                     and not is_non_config_sheet
                 ):
-                    data_start = header_row + 1
+                    if not sheets_config:
+                        data_start = header_row + 1
 
                     # SWM-стиль: все листы идут в один агрегированный конфиг
                     if is_swm_multisheet:
@@ -399,7 +469,8 @@ def parse_bom(file_path: str) -> BOMData:
 
                 # ── 5b. Non-config sheets (单车用量, 发动机附件) — collect parts only ──
                 if is_non_config_sheet and qty_col > 0:
-                    data_start = header_row + 1
+                    if not sheets_config:
+                        data_start = header_row + 1
                     for row_idx in range(data_start, (ws.max_row or data_start) + 1):
                         if HeuristicAnalyzer.is_cell_strike(ws, row_idx, part_no_col):
                             continue
@@ -427,45 +498,47 @@ def parse_bom(file_path: str) -> BOMData:
                     continue
 
                 # ── 6. Дедупликация имён комплектаций ──
-                config_names: list[str] = []
-                for col_idx in config_cols:
-                    name = HeuristicAnalyzer.get_cell_value(ws, header_row, col_idx)
-                    name_str = str(name) if name is not None else ""
-                    name_str = name_str.replace("\n", " ").replace("\r", "").strip()
+                if not sheets_config:
+                    config_names = []
+                    for col_idx in config_cols:
+                        name = HeuristicAnalyzer.get_cell_value(ws, header_row, col_idx)
+                        name_str = str(name) if name is not None else ""
+                        name_str = name_str.replace("\n", " ").replace("\r", "").strip()
 
-                    if not name_str:
-                        for look_row in range(max(1, header_row - 1), 0, -1):
-                            meta_val = HeuristicAnalyzer.get_cell_value(
-                                ws, look_row, col_idx
-                            )
-                            if meta_val is not None:
-                                meta_str = str(meta_val).strip()
-                                if meta_str and len(meta_str) < 80:
-                                    name_str = meta_str
-                                    break
-                    if not name_str:
-                        name_str = f"Config_{col_idx}"
-                    config_names.append(name_str)
+                        if not name_str:
+                            for look_row in range(max(1, header_row - 1), 0, -1):
+                                meta_val = HeuristicAnalyzer.get_cell_value(
+                                    ws, look_row, col_idx
+                                )
+                                if meta_val is not None:
+                                    meta_str = str(meta_val).strip()
+                                    if meta_str and len(meta_str) < 80:
+                                        name_str = meta_str
+                                        break
+                        if not name_str:
+                            name_str = f"Config_{col_idx}"
+                        config_names.append(name_str)
 
-                deduped_indices: list[int] = []
-                seen_norm: set[str] = set()
-                for i, name in enumerate(config_names):
-                    norm = name.lower().replace(" ", "").replace("-", "")
-                    if norm not in seen_norm:
-                        seen_norm.add(norm)
-                        deduped_indices.append(i)
+                    deduped_indices: list[int] = []
+                    seen_norm: set[str] = set()
+                    for i, name in enumerate(config_names):
+                        norm = name.lower().replace(" ", "").replace("-", "")
+                        if norm not in seen_norm:
+                            seen_norm.add(norm)
+                            deduped_indices.append(i)
 
-                if len(deduped_indices) < len(config_cols):
-                    logger.info(
-                        "Дедупликация: %d -> %d имён комплектаций",
-                        len(config_cols),
-                        len(deduped_indices),
-                    )
-                    config_cols = [config_cols[i] for i in deduped_indices]
-                    config_names = [config_names[i] for i in deduped_indices]
+                    if len(deduped_indices) < len(config_cols):
+                        logger.info(
+                            "Дедупликация: %d -> %d имён комплектаций",
+                            len(config_cols),
+                            len(deduped_indices),
+                        )
+                        config_cols = [config_cols[i] for i in deduped_indices]
+                        config_names = [config_names[i] for i in deduped_indices]
 
                 # ── 7. Парсинг данных комплектаций ──
-                data_start = header_row + 1
+                if not sheets_config:
+                    data_start = header_row + 1
                 max_row = ws.max_row or data_start
                 sheet_config_count = 0
 
@@ -859,60 +932,3 @@ class BOMService:
         if not self._bom:
             return ("", "")
         return lookup_part_name(self._bom, part_number)
-
-
-@dataclass
-class CardSheetInfo:
-    """Информация об одном листе операционной карты."""
-
-    card_number: str
-    sheet_name: str
-    operation_name: str = ""
-    is_valid: bool = False
-    has_data: bool = False
-    max_data_row: int = 0  # Максимальное количество строк данных на листе (для защиты от ложного вертикального split)
-
-
-@dataclass
-class CardPart:
-    """Деталь, найденная в операционной карте."""
-
-    part_number: str
-    quantity: float
-    source_card: str
-    source_sheet: str
-    name_ru: str = ""
-
-
-@dataclass
-class CardParseResult:
-    """Результат парсинга одной операционной карты."""
-
-    card_number: str
-    file_path: str
-    sheets: list[CardSheetInfo]
-    parts: list[CardPart]
-    aggregated_parts: dict[str, float]  # part_number -> total_qty
-    is_service_file: bool = False  # True если файл был определён как служебный
-    tables_extracted: int = 0  # Количество таблиц (операций) найденных во всех листах
-
-
-@dataclass
-class CardsData:
-    """Результат парсинга всех операционных карт."""
-
-    all_parts: dict[str, float]  # part_number -> суммарное количество
-    original_part_numbers: dict[str, str] = field(
-        default_factory=dict
-    )  # cleaned_part_no -> оригинальный (с тире и т.д.)
-    part_names_ru: dict[str, str] = field(default_factory=dict)
-    part_sources: dict[str, list[tuple[str, str, float]]] = field(default_factory=dict)
-    card_results: list[CardParseResult] = field(default_factory=list)
-    total_cards_processed: int = 0
-    total_sheets_processed: int = 0
-    total_sheets_skipped: int = 0
-    service_files_skipped: int = 0
-    corrupted_files: list[str] = field(default_factory=list)
-    corrupted_files_detailed: list[dict[str, str]] = field(default_factory=list)
-    total_tables_extracted: int = 0  # Количество таблиц (операций) во всех листах
-    split_stats: Any = None

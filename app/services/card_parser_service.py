@@ -191,7 +191,26 @@ class CardParserService:
             "file_classification_rules"
         )
         self._table_boundaries: dict[str, Any] = cards_cfg.get("table_boundaries", {})
-        self._columns: dict[str, int] = cards_cfg.get("columns", {})
+
+        # ML boundary schema adapter: handle list or single integer for header_row
+        tb = cards_cfg.get("table_boundaries", {})
+        header_rows = tb.get("header_rows", [1])
+        if isinstance(header_rows, list) and header_rows:
+            self._header_row = header_rows[0] if isinstance(header_rows[0], int) else 1
+        elif isinstance(header_rows, int):
+            self._header_row = header_rows
+        else:
+            self._header_row = tb.get("header_row", 1)
+
+        # ML column schema adapter: handle nested dictionaries (e.g. {"col_index": 1})
+        columns_raw = cards_cfg.get("columns", {})
+        self._columns = {}
+        for key, val in columns_raw.items():
+            if isinstance(val, dict):
+                self._columns[key] = val.get("col_index", 0)
+            else:
+                self._columns[key] = int(val) if val else 0
+
         self._sheets_cfg: dict[str, Any] = cards_cfg.get("sheets", {})
 
     # ------------------------------------------------------------------
@@ -261,7 +280,7 @@ class CardParserService:
         if name_col <= 0:
             return []
 
-        header_row = self._table_boundaries.get("header_row", 1)
+        header_row = self._header_row
         data_start = self._table_boundaries.get("data_start_row", header_row + 1)
         end_markers: list[str] = self._table_boundaries.get("end_markers", [])
 
@@ -302,7 +321,7 @@ class CardParserService:
         part_no_col = self._columns.get("part_no", 0)
         qty_col = self._columns.get("qty", 0)
         name_col = self._columns.get("name", 0)
-        header_row = self._table_boundaries.get("header_row", 1)
+        header_row = self._header_row
         data_start = self._table_boundaries.get("data_start_row", header_row + 1)
         end_markers: list[str] = self._table_boundaries.get("end_markers", [])
 
@@ -405,6 +424,14 @@ class CardParserService:
                 pn_str = str(raw_pn).strip()
                 if not pn_str:
                     continue
+
+                # Check for strikethrough
+                try:
+                    cell = ws.cell(row=row_idx, column=part_no_col)
+                    if cell and cell.font and cell.font.strike:
+                        continue
+                except Exception:
+                    pass
 
                 # Validate part number
                 cleaned_pn = clean_part_number(pn_str)

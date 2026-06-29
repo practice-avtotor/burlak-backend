@@ -83,7 +83,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
         }
         response = ml_client.analyze_structure(payload)
 
-        mapping_config = response
+        mapping_config = response.get("mapping_config", response)
         if (
             not mapping_config
             or "bom" not in mapping_config
