@@ -505,11 +505,11 @@ class TestCleanNamedRanges:
         """Create a minimal workbook.xml with definedNames."""
         import xml.etree.ElementTree as ET
 
-        NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        ns_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
-        NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        ns_r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         root = ET.fromstring(
-            f'<workbook xmlns="{NS_MAIN}" xmlns:r="{NS_R}">'
+            f'<workbook xmlns="{ns_main}" xmlns:r="{ns_r}">'
             f"  <sheets>"
             f'    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>'
             f'    <sheet name="Sheet2" sheetId="2" r:id="rId2"/>'
@@ -518,9 +518,9 @@ class TestCleanNamedRanges:
         )
 
         if defined_names:
-            dn_elem = ET.SubElement(root, f"{{{NS_MAIN}}}definedNames")
+            dn_elem = ET.SubElement(root, f"{{{ns_main}}}definedNames")
             for dn in defined_names:
-                d = ET.SubElement(dn_elem, f"{{{NS_MAIN}}}definedName")
+                d = ET.SubElement(dn_elem, f"{{{ns_main}}}definedName")
                 d.set("name", dn.get("name", ""))
                 if "localSheetId" in dn:
                     d.set("localSheetId", dn["localSheetId"])
@@ -731,10 +731,10 @@ class TestCleanNamedRangesAdvanced:
         """Create a minimal workbook.xml with definedNames."""
         import xml.etree.ElementTree as ET
 
-        NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-        NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        ns_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        ns_r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         root = ET.fromstring(
-            f'<workbook xmlns="{NS_MAIN}" xmlns:r="{NS_R}">'
+            f'<workbook xmlns="{ns_main}" xmlns:r="{ns_r}">'
             f"  <sheets>"
             f'    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>'
             f'    <sheet name="Sheet2" sheetId="2" r:id="rId2"/>'
@@ -742,9 +742,9 @@ class TestCleanNamedRangesAdvanced:
             f"</workbook>"
         )
         if defined_names:
-            dn_elem = ET.SubElement(root, f"{{{NS_MAIN}}}definedNames")
+            dn_elem = ET.SubElement(root, f"{{{ns_main}}}definedNames")
             for dn in defined_names:
-                d = ET.SubElement(dn_elem, f"{{{NS_MAIN}}}definedName")
+                d = ET.SubElement(dn_elem, f"{{{ns_main}}}definedName")
                 d.set("name", dn.get("name", ""))
                 if "localSheetId" in dn:
                     d.set("localSheetId", dn["localSheetId"])

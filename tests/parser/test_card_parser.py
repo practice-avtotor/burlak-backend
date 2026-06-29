@@ -44,7 +44,6 @@ from app.services.card_parser_legacy import (
     _find_excel_files,
     _merge_multiline_part_numbers,
     _safe_name,
-    _safe_remove,
     _walk_extracted_dir,
     parse_card_file,
     parse_cards,

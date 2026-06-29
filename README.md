@@ -61,6 +61,7 @@ backend/
 * Python 3.12+
 * [uv](https://github.com/astral-sh/uv) (Python package manager)
 * Redis server (running locally or in Docker)
+* **LibreOffice** (specifically `soffice` CLI, required for legacy `.xls` to `.xlsx` format conversion in Celery workers)
 
 ### Installation
 1. Install dependencies:
@@ -126,16 +127,17 @@ All files must fully comply with mypy strict type hinting guidelines.
 
 * **No zipfile.extractall():** Never unpack the 1.3 GB zip archive to disk. Stream individual card bytes directly from the archive using `zipfile.open()`.
 * **SQLite WAL Writes:** All database writes inside Celery tasks must use the synchronous repository and the `BEGIN IMMEDIATE` transaction block to avoid locking/concurrency errors.
+* **LibreOffice CLI Dependency:** The OS environment must have `soffice` (LibreOffice CLI) installed to handle legacy `.xls` format conversion in workers.
 * **Response Streaming:** Download endpoints for results must stream binary data using `StreamingResponse` or `FileResponse` to avoid loading massive archives into memory.
 
+---
 
-* **Response Streaming:** Download endpoints for results must stream binary data using `StreamingResponse` or `FileResponse` to avoid loading massive archives into memory.
-
-## 🐳 Локальная разработка с Docker
+## Local development with Docker
 
 ```bash
-# Запустить инфраструктуру (Redis, ML-Mock, Celery)
+# Run infrastructure (Redis, ML-Mock, Celery)
 docker compose -f docker-compose.dev.yml up -d
 
-# Запустить бэкенд локально
+# Run the backend locally
 uv run uvicorn app.main:app --reload
+```
