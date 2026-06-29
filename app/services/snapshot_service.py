@@ -22,7 +22,7 @@ import openpyxl
 logger = logging.getLogger(__name__)
 
 # Maximum columns to scan per sheet (safety cap)
-_MAX_COLUMNS = 50
+_MAX_COLUMNS = 200
 
 
 def extract_snapshot_from_bytes(

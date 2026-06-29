@@ -653,7 +653,7 @@ class HeuristicAnalyzer:
     # Максимальное количество строк для сканирования заголовков
     MAX_HEADER_SCAN_ROWS = int(os.environ.get("BURLAK_MAX_HEADER_SCAN_ROWS", 30))
     # Максимальная ширина сканирования колонок (для SWM-формата, где qty может быть в C30)
-    MAX_COL_SCAN_WIDTH = int(os.environ.get("BURLAK_MAX_COL_SCAN_WIDTH", 40))
+    MAX_COL_SCAN_WIDTH = int(os.environ.get("BURLAK_MAX_COL_SCAN_WIDTH", 200))
     # Минимальный порог уверенности для определения колонки
     CONFIDENCE_THRESHOLD = float(os.environ.get("BURLAK_CONFIDENCE_THRESHOLD", 0.3))
 
@@ -1787,13 +1787,13 @@ class HeuristicAnalyzer:
             (header_row, part_no_col, qty_col, name_col) или None.
         """
         max_row = ws.max_row or 200
-        max_col = ws.max_column or 50
+        max_col = ws.max_column or 200
 
         scan_width = HeuristicAnalyzer.MAX_COL_SCAN_WIDTH
 
         for row_idx in range(start_row, max_row + 1):
             row_values: list[str] = []
-            for col_idx in range(1, min(max_col + 1, scan_width)):
+            for col_idx in range(1, min(max_col + 1, scan_width + 1)):
                 v = HeuristicAnalyzer.get_cell_value(ws, row_idx, col_idx)
                 row_values.append(str(v).strip().lower() if v is not None else "")
 

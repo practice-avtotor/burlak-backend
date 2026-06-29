@@ -1238,49 +1238,21 @@ def _validate_split_file(path: str) -> bool:
 
     Returns True if the file is valid, False if it should be deleted.
     """
-    try:
-        from app.services.validator import validate_split_file
+    from app.services.validator import validate_split_file
 
-        result = validate_split_file(
-            path,
-            has_images_in_original=True,  # 保守но: предполагаем что были изображения
-        )
-        if not result.is_valid:
-            for issue in result.errors:
-                logger.warning(
-                    "Invalid split file %s: [%s] %s",
-                    os.path.basename(path),
-                    issue.level,
-                    issue.message,
-                )
-        return result.is_valid
-    except ImportError:
-        # Fallback: если validator недоступен, используем простую проверку
-        try:
-            with zipfile.ZipFile(path, "r") as zf:
-                has_sheet = False
-                for name in zf.namelist():
-                    if (
-                        name.endswith(".xml")
-                        and "sheet" in name.lower()
-                        and "_rels" not in name
-                    ):
-                        data = zf.read(name)
-                        root = ET.fromstring(data)
-                        ns = f"{{{NS_MAIN}}}sheetData"
-                        if root.find(ns) is None:
-                            logger.warning(
-                                "Invalid split file %s: missing sheetData in %s",
-                                os.path.basename(path),
-                                name,
-                            )
-                            return False
-                        has_sheet = True
-                        break
-                return has_sheet
-        except (zipfile.BadZipFile, ET.ParseError, OSError) as e:
-            logger.warning("Invalid split file %s: %s", os.path.basename(path), e)
-            return False
+    result = validate_split_file(
+        path,
+        has_images_in_original=True,  # 保守но: предполагаем что были изображения
+    )
+    if not result.is_valid:
+        for issue in result.errors:
+            logger.warning(
+                "Invalid split file %s: [%s] %s",
+                os.path.basename(path),
+                issue.level,
+                issue.message,
+            )
+    return result.is_valid
 
 
 def _safe_filename(name: str) -> str:
@@ -2159,7 +2131,7 @@ def _find_table_data_end(
         # if the ENTIRE row is empty (not just part_no column)
         non_empty = 0
         row_values_check: list[str] = []
-        max_check_col = min((ws.max_column or 10) + 1, 25)
+        max_check_col = min((ws.max_column or 10) + 1, 200)
         for c in range(1, max_check_col):
             v = ws.cell_value(r, c)
             if v is not None:
