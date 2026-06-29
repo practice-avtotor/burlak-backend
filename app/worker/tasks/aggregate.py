@@ -2,28 +2,30 @@
 
 Triggered by ``process_card`` when ``processed + failed == total``
 (atomic counter check in SQLite).
-
-Workflow:
-  1. Load BOM.xlsx from shared storage.
-  2. Aggregate all card_*_materials.json from job directory.
-  3. Compare via ComparisonService (Pandas merge/join).
-  4. Fetch failed cards from DB.
-  5. Generate diff.xlsx report.
-  6. Update job stage to ``packaging``.
-  7. Trigger ``package.delay(job_id)``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
+from pathlib import Path
 
 from celery import Task  # type: ignore[import-untyped]
 
 from app.core.config import get_settings
 from app.db import sync_repository
-from app.services.comparison_service import ComparisonService
+from app.services.bom_parser_service import (
+    CardParseResult,
+    CardPart,
+    CardsData,
+    CardSheetInfo,
+    parse_bom,
+)
+from app.services.comparator_service import compare_all_configs
+from app.services.normalizer import normalize_part_number
+from app.services.report_service import generate_discrepancy_report
 from app.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -41,37 +43,104 @@ def aggregate(self: Task, job_id: int) -> None:
         bom_path, _archive_path = sync_repository.get_job_files(job_id)
         if not bom_path:
             raise ValueError(f"Job {job_id} has no bom_path set")
-        mapping_config = sync_repository.get_mapping_config(job_id)
-        logger.info("Loading BOM from %s", bom_path)
-        bom_df = ComparisonService.load_bom(bom_path, mapping_config)
-        logger.info("BOM loaded: %d rows", len(bom_df))
 
-        # 2. Load cards data
-        job_dir = os.path.join(settings.storage_path, str(job_id))
-        cards_df = ComparisonService.load_cards_data(job_dir)
-        logger.info("Cards data loaded: %d rows", len(cards_df))
-
-        # 3. Compare
-        result = ComparisonService.compare(bom_df, cards_df)
-        summary = result["summary"]
+        logger.info("Parsing BOM from %s via legacy parser", bom_path)
+        bom = parse_bom(bom_path)
         logger.info(
-            "Comparison complete: %d discrepancies "
-            "(only_in_bom=%d, only_in_cards=%d, qty_mismatch=%d)",
-            summary["total_discrepancies"],
-            summary["only_in_bom"],
-            summary["only_in_cards"],
-            summary["qty_mismatch"],
+            "BOM parsed: %d parts, %d configs", len(bom.parts), len(bom.config_names)
         )
 
-        # 4. Fetch failed cards
-        failed_cards = _get_failed_cards(job_id)
-        if failed_cards:
-            logger.warning("Job %d has %d failed cards", job_id, len(failed_cards))
+        # 2. Load cards data from JSON files
+        job_dir = os.path.join(settings.storage_path, str(job_id))
+        cards_dir = os.path.join(job_dir, "card_materials")
 
-        # 5. Generate report
+        card_results = []
+        all_parts: dict[str, float] = {}
+        original_part_numbers: dict[str, str] = {}
+
+        if os.path.exists(cards_dir):
+            for fpath in sorted(Path(cards_dir).glob("**/*.json")):
+                if fpath.name.endswith("_error.json"):
+                    continue
+                try:
+                    with open(fpath, encoding="utf-8") as f:
+                        parts_list = json.load(f)
+                except Exception as exc:
+                    logger.warning("Failed to load JSON file %s: %s", fpath, exc)
+                    continue
+
+                if not parts_list:
+                    continue
+
+                card_no = parts_list[0].get("card_no") if parts_list else fpath.stem
+
+                card_parts = []
+                aggregated_parts: dict[str, float] = {}
+                for p in parts_list:
+                    part_no = p["part_no"]
+                    qty = p["qty"]
+                    card_parts.append(
+                        CardPart(
+                            part_number=part_no,
+                            quantity=qty,
+                            source_card=card_no,
+                            source_sheet=p["sheet_name"],
+                        )
+                    )
+                    norm_pn = normalize_part_number(part_no)
+                    aggregated_parts[norm_pn] = aggregated_parts.get(norm_pn, 0.0) + qty
+                    all_parts[norm_pn] = all_parts.get(norm_pn, 0.0) + qty
+                    if norm_pn not in original_part_numbers:
+                        original_part_numbers[norm_pn] = part_no
+
+                card_results.append(
+                    CardParseResult(
+                        card_number=card_no,
+                        file_path=str(fpath),
+                        sheets=[
+                            CardSheetInfo(
+                                card_number=card_no,
+                                sheet_name=p["sheet_name"],
+                                is_valid=True,
+                                has_data=True,
+                            )
+                            for p in parts_list
+                        ],
+                        parts=card_parts,
+                        aggregated_parts=aggregated_parts,
+                    )
+                )
+
+        cards_data = CardsData(
+            all_parts=all_parts,
+            original_part_numbers=original_part_numbers,
+            card_results=card_results,
+            total_cards_processed=len(card_results),
+            total_sheets_processed=sum(len(cr.sheets) for cr in card_results),
+        )
+
+        # 3. Load failed/corrupted cards from DB and append to cards_data
+        failed_cards = _get_failed_cards(job_id)
+        cards_data.corrupted_files = [fc["card_path"] for fc in failed_cards]
+        cards_data.corrupted_files_detailed = [
+            {"file": fc["card_path"], "error": fc["error_message"]}
+            for fc in failed_cards
+        ]
+
+        logger.info(
+            "Cards data constructed: %d processed, %d failed",
+            len(card_results),
+            len(failed_cards),
+        )
+
+        # 4. Compare all configs
+        logger.info("Comparing BOM vs Cards via legacy matching engine")
+        result = compare_all_configs(bom, cards_data, use_fuzzy=True)
+
+        # 5. Generate Excel and Text report
         diff_path = os.path.join(job_dir, "diff.xlsx")
-        ComparisonService.generate_report(result, diff_path, failed_cards)
-        logger.info("Report saved to %s", diff_path)
+        logger.info("Generating spreadsheet report at %s", diff_path)
+        generate_discrepancy_report(result, diff_path, bom=bom, cards_data=cards_data)
 
         # 6. Transition stage to packaging
         sync_repository.update_job_status(job_id, "processing", "packaging")
