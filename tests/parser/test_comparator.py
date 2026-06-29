@@ -20,13 +20,13 @@ from unittest.mock import patch
 
 import pytest
 
-from burlak_parser.bom_parser import BOMData, PartInfo
-from burlak_parser.card_parser import (
+from app.services.bom_parser_service import BOMData, PartInfo
+from app.services.card_parser_legacy import (
     CardParseResult,
     CardPart,
     CardsData,
 )
-from burlak_parser.comparator import (
+from app.services.comparator_service import (
     ConfigComparisonResult,
     Discrepancy,
     DiscrepancyType,
@@ -40,7 +40,7 @@ from burlak_parser.comparator import (
     format_discrepancy_report,
     verify_integrity,
 )
-from burlak_parser.fuzzy_matcher import FuzzyMatcher
+from app.services.fuzzy_matcher import FuzzyMatcher
 
 # ═══════════════════════════════════════════════════════════════════════
 #  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -1651,9 +1651,11 @@ class TestCompareAllConfigsParallelErrors:
             global_names={"P001": ("Part1", ""), "P002": ("Part2", "")},
         )
         cards = _make_minimal_cards({"P001": 1.0})
-        with patch("burlak_parser.comparator.ProcessPoolExecutor", ThreadPoolExecutor):
+        with patch(
+            "app.services.comparator_service.ProcessPoolExecutor", ThreadPoolExecutor
+        ):
             with patch(
-                "burlak_parser.comparator._compare_config_worker",
+                "app.services.comparator_service._compare_config_worker",
                 side_effect=ValueError("Worker crashed"),
             ):
                 result = compare_all_configs(bom, cards, use_fuzzy=False)

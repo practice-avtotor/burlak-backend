@@ -25,8 +25,8 @@ import openpyxl
 import pytest
 from openpyxl import Workbook
 
-from burlak_parser.bom_parser import parse_bom
-from burlak_parser.heuristic_analyzer import HeuristicAnalyzer
+from app.services.bom_parser_service import parse_bom
+from app.services.heuristic_analyzer import HeuristicAnalyzer
 
 
 def _create_complex_bom_xlsx() -> str:

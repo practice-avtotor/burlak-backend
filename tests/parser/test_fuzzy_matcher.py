@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from burlak_parser.fuzzy_matcher import (
+from app.services.fuzzy_matcher import (
     FuzzyMatcher,
     is_fuzzy_match,
     is_valid_part_number,

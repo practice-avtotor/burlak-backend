@@ -19,7 +19,7 @@ import openpyxl
 import pytest
 from openpyxl import Workbook
 
-from burlak_parser.card_parser import (
+from app.services.card_parser_legacy import (
     CardsData,
     parse_cards,
     split_cards_to_files,

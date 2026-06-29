@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from openpyxl import Workbook
 
-from burlak_parser.bom_parser import (
+from app.services.bom_parser_service import (
     BOMData,
     BOMService,
     PartInfo,
@@ -557,7 +557,7 @@ class TestParseBomEmptySheet:
         ws1.cell(row=1, column=3, value="名称")
         ws1.cell(row=1, column=4, value="Config")
 
-        ws2 = wb.create_sheet(title="EmptySheet")
+        wb.create_sheet(title="EmptySheet")
         # No data at all
         path = os.path.join(str(tmp_path), "empty_test.xlsx")
         wb.save(path)
@@ -1511,7 +1511,7 @@ class TestParseBomEdgeCases:
         path = _create_xlsx({"BOM": data})
         bom = parse_bom(path)
         # Need 2+ configs and 3+ data rows for is_sheet_bom_candidate
-        cn = bom.config_names[0]
+        bom.config_names[0]
         # P001 has qty=0 in all configs → should NOT be in config quantities
         for cn_name in bom.config_names:
             assert "P001" not in bom.config_quantities[cn_name], (

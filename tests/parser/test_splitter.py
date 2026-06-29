@@ -19,8 +19,8 @@ from typing import Any
 import openpyxl
 import pytest
 
-from burlak_parser.heuristic_analyzer import HeuristicAnalyzer
-from burlak_parser.splitter import (
+from app.services.heuristic_analyzer import HeuristicAnalyzer
+from app.services.splitter import (
     CardSplitter,
     _clean_named_ranges,
     _collect_related_files,
@@ -422,7 +422,7 @@ class TestSplitManyParallel:
 class TestSplitFileWorker:
     def test_worker_basic(self, tmp_dir: str, multi_sheet_xlsx: str):
         """Worker function produces correct output."""
-        from burlak_parser.splitter import preallocate_split_paths
+        from app.services.splitter import preallocate_split_paths
 
         output_dir = os.path.join(tmp_dir, "worker_out")
         os.makedirs(output_dir, exist_ok=True)

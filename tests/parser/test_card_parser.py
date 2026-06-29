@@ -24,7 +24,7 @@ import openpyxl
 import pytest
 from openpyxl import Workbook
 
-from burlak_parser.card_parser import (
+from app.services.card_parser_legacy import (
     SKIP_REASON_NO_DATA,
     SKIP_REASON_TEMPLATE,
     TEMPLATE_SHEET_KEYWORDS,
@@ -201,7 +201,7 @@ class TestExtractCardNumberAbsoluteFallback:
     def test_fallback_no_card_number(self, monkeypatch):
         """Когда extract_card_number (heuristic) возвращает None → os.path.splitext(basename)[0]."""
         monkeypatch.setattr(
-            "burlak_parser.card_parser.extract_card_number",
+            "app.services.card_parser_legacy.extract_card_number",
             lambda fp, ws: None,
         )
         es = _make_excel_sheet([["some random text"]])
@@ -435,7 +435,7 @@ class TestSafeRemoveException:
         ВАЖНО: вызываем card_parser._safe_remove напрямую, а не локальную
         _safe_remove-helper из этого же тестового файла, которая shadowит импорт.
         """
-        import burlak_parser.card_parser as _cp
+        import app.services.card_parser_legacy as _cp
 
         def mock_remove(path):
             raise PermissionError("Permission denied")
@@ -516,7 +516,7 @@ class TestParseCardsErrors:
             return original_parse(fp, is_service_file=is_service_file)
 
         monkeypatch.setattr(
-            "burlak_parser.card_parser.parse_card_file",
+            "app.services.card_parser_legacy.parse_card_file",
             mock_parse,
         )
 
@@ -624,7 +624,7 @@ class TestSplitCardsToFiles:
 
     def test_split_all_non_empty_false(self, monkeypatch, tmp_path):
         """split_all_non_empty=False → проверяет is_valid."""
-        from burlak_parser import splitter as splitter_mod
+        from app.services import splitter as splitter_mod
 
         monkeypatch.setattr(
             splitter_mod,
@@ -669,7 +669,7 @@ class TestSplitCardsToFiles:
 
     def test_parallel_split_path(self, monkeypatch, tmp_path):
         """workers > 1 и tasks > 1 → parallel path."""
-        from burlak_parser import splitter as splitter_mod
+        from app.services import splitter as splitter_mod
 
         monkeypatch.setattr(
             splitter_mod,
@@ -702,7 +702,7 @@ class TestSplitCardsToFiles:
 
     def test_split_error_handling(self, monkeypatch, tmp_path):
         """split_file бросает исключение → except (lines 980-982)."""
-        from burlak_parser import splitter as splitter_mod
+        from app.services import splitter as splitter_mod
 
         class MockSplitter:
             def split_file(self, src, out, sheets, label):
@@ -734,7 +734,7 @@ class TestSplitCardsToFiles:
 
     def test_corrupted_files_none_case(self, monkeypatch, tmp_path):
         """cards_data.corrupted_files defaults to empty list, gets populated on error."""
-        from burlak_parser import splitter as splitter_mod
+        from app.services import splitter as splitter_mod
 
         class MockSplitter:
             def split_file(self, src, out, sheets, label):
@@ -3281,7 +3281,7 @@ class TestSplitStatistics:
 
     def test_xlsx_files_processed(self, monkeypatch, tmp_path):
         """.xlsx файлы правильно считаются в статистике (total_xlsx)."""
-        from burlak_parser import splitter as splitter_mod
+        from app.services import splitter as splitter_mod
 
         monkeypatch.setattr(
             splitter_mod,
@@ -3551,7 +3551,7 @@ class TestSplitStatistics:
 
     def test_error_files_marked(self, monkeypatch, tmp_path):
         """Ошибки при split_file отмечаются в file_stats."""
-        from burlak_parser import splitter as splitter_mod
+        from app.services import splitter as splitter_mod
 
         def mock_extract_to_path(source_path, output_path, sheet_name):
             return {
@@ -3592,7 +3592,7 @@ class TestSplitStatistics:
 
     def test_cp7cp8_files_included_in_stats(self, monkeypatch, tmp_path):
         """CP7/CP8 файлы включаются в статистику (не пропускаются)."""
-        from burlak_parser import splitter as splitter_mod
+        from app.services import splitter as splitter_mod
 
         monkeypatch.setattr(
             splitter_mod,

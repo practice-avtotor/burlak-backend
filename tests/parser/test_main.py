@@ -26,8 +26,8 @@ from unittest.mock import patch
 import openpyxl
 import pytest
 
-from burlak_parser.bom_parser import BOMData
-from burlak_parser.main import (
+from app.services.bom_parser_service import BOMData
+from app.services.main_legacy import (
     clean_output_dirs,
     main,
     run_pipeline,
@@ -1030,7 +1030,7 @@ class TestRunPipelineInteractiveConfig:
         """single_config with no config_name → interactive selection is called."""
         # Mock interactive selection to return a valid config
         monkeypatch.setattr(
-            "burlak_parser.main.select_config_interactive",
+            "app.services.main_legacy.select_config_interactive",
             lambda bom: "舒享版",
         )
         run_pipeline(
@@ -1075,7 +1075,7 @@ class TestMainErrorHandling:
             ],
         ):
             with patch(
-                "burlak_parser.main.run_pipeline",
+                "app.services.main_legacy.run_pipeline",
                 side_effect=KeyboardInterrupt(),
             ):
                 with pytest.raises(SystemExit) as exc:
@@ -1096,7 +1096,7 @@ class TestMainErrorHandling:
             ],
         ):
             with patch(
-                "burlak_parser.main.run_pipeline",
+                "app.services.main_legacy.run_pipeline",
                 side_effect=ValueError("test error"),
             ):
                 with pytest.raises(SystemExit) as exc:
@@ -1289,7 +1289,7 @@ class TestMainEntryPoint:
             [
                 sys.executable,
                 "-m",
-                "burlak_parser.main",
+                "app.services.main_legacy",
                 "--bom",
                 bom_path,
                 "--cards",
@@ -1334,7 +1334,7 @@ class TestIntegrityChecks:
           - matched_parts + only_bom_count + qty_mismatch_count + fuzzy_count != total_bom_parts
           - В all_discrepancies есть расхождение с неизвестным типом (не входит ни в один из 4)
         """
-        from burlak_parser.comparator import (
+        from app.services.comparator_service import (
             ConfigComparisonResult,
             Discrepancy,
             MultiConfigComparisonResult,
@@ -1372,7 +1372,7 @@ class TestIntegrityChecks:
 
         with caplog.at_level(logging.WARNING):
             with patch(
-                "burlak_parser.main.compare_all_configs",
+                "app.services.main_legacy.compare_all_configs",
                 return_value=mock_result,
             ):
                 run_pipeline(
@@ -1416,7 +1416,7 @@ class TestHelpOutput:
     def test_help_contains_all_flags(self):
         """--help содержит все 10 CLI флагов (long и short формы)."""
         result = subprocess.run(
-            [sys.executable, "-m", "burlak_parser.main", "--help"],
+            [sys.executable, "-m", "app.services.main_legacy", "--help"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1448,7 +1448,7 @@ class TestHelpOutput:
     def test_help_contains_epilog_examples(self):
         """--help epilog содержит все примеры использования."""
         result = subprocess.run(
-            [sys.executable, "-m", "burlak_parser.main", "--help"],
+            [sys.executable, "-m", "app.services.main_legacy", "--help"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1472,7 +1472,7 @@ class TestHelpOutput:
     def test_help_does_not_crash_without_args(self):
         """Запуск без обязательных аргументов не падает (argparse сам выводит usage)."""
         result = subprocess.run(
-            [sys.executable, "-m", "burlak_parser.main"],
+            [sys.executable, "-m", "app.services.main_legacy"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1484,7 +1484,7 @@ class TestHelpOutput:
     def test_help_via_h_flag(self):
         """-h (short help) работает так же как --help."""
         result = subprocess.run(
-            [sys.executable, "-m", "burlak_parser.main", "-h"],
+            [sys.executable, "-m", "app.services.main_legacy", "-h"],
             capture_output=True,
             text=True,
             timeout=10,

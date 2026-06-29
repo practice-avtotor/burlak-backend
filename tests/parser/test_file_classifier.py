@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from burlak_parser.file_classifier import (
+from app.services.file_classifier import (
     FileClassification,
     _contains_service_keywords,
     _extract_operation_number,

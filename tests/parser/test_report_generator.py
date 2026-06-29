@@ -20,15 +20,15 @@ from typing import Any
 import openpyxl
 import pytest
 
-from burlak_parser.bom_parser import BOMData, PartInfo
-from burlak_parser.card_parser import CardsData
-from burlak_parser.comparator import (
+from app.services.bom_parser_service import BOMData, PartInfo
+from app.services.card_parser_legacy import CardsData
+from app.services.comparator_service import (
     ConfigComparisonResult,
     Discrepancy,
     DiscrepancyType,
     MultiConfigComparisonResult,
 )
-from burlak_parser.report_generator import (
+from app.services.report_service import (
     Reporter,
     create_split_cards_archive,
     generate_discrepancy_report,
@@ -258,7 +258,7 @@ class TestGenerateDiscrepancyReportSummary:
         generate_discrepancy_report(result, path)
 
         # Config table headers at row 9 (after title, cards, info, blank)
-        summary = _get_xlsx_sheet_names(path)[0]  # "Сводка"
+        _get_xlsx_sheet_names(path)[0]  # "Сводка"
         # Check headers at row ~10 (config_header_row)
         # Find C1 and C2 in the config table
         found_c1 = False
@@ -707,7 +707,7 @@ class TestCreateSplitCardsArchive:
         os.makedirs(src_dir)
 
         zip_path = os.path.join(output_dir, "empty.zip")
-        result = create_split_cards_archive(src_dir, zip_path)
+        create_split_cards_archive(src_dir, zip_path)
         assert os.path.exists(zip_path)
 
         import zipfile

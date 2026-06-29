@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import fakeredis
 import pytest
 
 from app.services import cache_service
