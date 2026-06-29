@@ -1,6 +1,21 @@
+"""Celery task: package — archive translated cards and finalize job.
+
+Triggered by ``aggregate`` after ``diff.xlsx`` is generated.
+
+Workflow:
+  1. Check if ``translated_cards/`` directory exists.
+  2. Create ``translated_cards.zip`` from all XLSX files in that directory.
+  3. Recursively delete ``translated_cards/`` directory.
+  4. Count failed cards in DB.
+  5. Set final job status: ``done`` (if failed == 0) or ``error`` (if failed > 0).
+"""
+
+from __future__ import annotations
+
 import logging
 import os
 import shutil
+import sqlite3
 import zipfile
 
 from celery import Task  # type: ignore[import-untyped]
@@ -16,66 +31,116 @@ settings = get_settings()
 @celery_app.task(bind=True, max_retries=3, retry_backoff=True, retry_backoff_max=30)  # type: ignore[untyped-decorator]
 def package(self: Task, job_id: int) -> None:
     """Packages all translated card documents into a single ZIP file and cleans up temporary files."""
-    logger.info(f"Starting package task for job {job_id}")
+    logger.info("Starting package task for job %d", job_id)
     try:
-        # Determine job status
-        # We check sync_repository to see if there are any failures
-        db_path = settings.db_url
-        if db_path.startswith("sqlite:///"):
-            db_path = db_path[len("sqlite:///") :]
-
-        import sqlite3
-
-        conn = sqlite3.connect(db_path)
-        cursor = conn.execute(
-            "SELECT processed, failed, total FROM jobs WHERE id = ?", (job_id,)
-        )
-        job = cursor.fetchone()
-        conn.close()
-
-        failed = 0
-        if job:
-            processed, failed, total = job
-            logger.info(
-                f"Job {job_id} stats: processed={processed}, failed={failed}, total={total}"
-            )
-
         job_dir = os.path.join(settings.storage_path, str(job_id))
         translated_cards_dir = os.path.join(job_dir, "translated_cards")
         output_zip_path = os.path.join(job_dir, "translated_cards.zip")
 
-        # Create zip archive of all translated xlsx cards (if the directory exists)
-        if os.path.exists(translated_cards_dir):
-            with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for root, dirs, files in os.walk(translated_cards_dir):
-                    for file in files:
-                        full_path = os.path.join(root, file)
-                        # Archive path should be relative to the translated_cards_dir
-                        rel_path = os.path.relpath(full_path, translated_cards_dir)
-                        zf.write(full_path, rel_path)
-            logger.info(f"Created ZIP archive at {output_zip_path}")
+        # 1. Create ZIP archive of all translated xlsx cards
+        _create_zip(translated_cards_dir, output_zip_path)
+
+        # 2. Clean up temporary translated_cards directory
+        _cleanup_translated_dir(translated_cards_dir)
+
+        # 3. Count failed cards
+        failed_count = _count_failed_cards(job_id)
+
+        # 4. Set final job status
+        if failed_count == 0:
+            sync_repository.update_job_status(job_id, "done", "completed")
+            logger.info("Job %d completed successfully (done)", job_id)
         else:
-            # Create an empty zip if no cards were processed/translated
-            with zipfile.ZipFile(output_zip_path, "w") as zf:
-                pass
+            sync_repository.update_job_status(job_id, "error", "completed_with_errors")
             logger.warning(
-                f"No translated cards folder found at {translated_cards_dir}. Created empty ZIP."
+                "Job %d completed with %d failed cards (error)",
+                job_id,
+                failed_count,
             )
 
-        # Clean up temporary translated_cards directory
-        if os.path.exists(translated_cards_dir):
-            shutil.rmtree(translated_cards_dir)
-            logger.info(f"Cleaned up temporary directory: {translated_cards_dir}")
-
-        # Set final job status
-        final_status = "error" if failed > 0 else "done"
-        sync_repository.update_job_status(job_id, final_status, None)
-        logger.info(
-            f"Finished packaging task for job {job_id} with status: {final_status}"
-        )
-
     except Exception as exc:
-        logger.error(f"Packaging failed for job {job_id}: {exc}", exc_info=True)
+        logger.error("Packaging failed for job %d: %s", job_id, exc, exc_info=True)
         if self.request.retries >= self.max_retries:
-            sync_repository.update_job_status(job_id, "error")
+            sync_repository.update_job_status(job_id, "error", "packaging_failed")
         raise self.retry(exc=exc)
+
+
+def _create_zip(translated_cards_dir: str, output_zip_path: str) -> None:
+    """Create ``translated_cards.zip`` from all XLSX files in *translated_cards_dir*."""
+    if not os.path.isdir(translated_cards_dir):
+        logger.warning(
+            "translated_cards directory not found at %s — creating empty archive",
+            translated_cards_dir,
+        )
+        os.makedirs(os.path.dirname(output_zip_path), exist_ok=True)
+        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            pass
+        logger.info("Empty archive created at %s", output_zip_path)
+        return
+
+    os.makedirs(os.path.dirname(output_zip_path), exist_ok=True)
+    file_count = 0
+    with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(translated_cards_dir):
+            for fname in sorted(files):
+                # Skip temporary Excel files
+                if fname.startswith("~$"):
+                    continue
+                # Only include .xlsx files
+                if not fname.lower().endswith((".xlsx", ".xls")):
+                    continue
+                full_path = os.path.join(root, fname)
+                rel_path = os.path.relpath(full_path, translated_cards_dir)
+                try:
+                    zf.write(full_path, rel_path)
+                    file_count += 1
+                except (FileNotFoundError, PermissionError) as exc:
+                    logger.warning("Skipping unreadable file %s: %s", fname, exc)
+
+    size_kb = (
+        os.path.getsize(output_zip_path) / 1024
+        if os.path.exists(output_zip_path)
+        else 0
+    )
+    logger.info(
+        "Archive created at %s (%d files, %.1f KB)",
+        output_zip_path,
+        file_count,
+        size_kb,
+    )
+
+
+def _cleanup_translated_dir(translated_cards_dir: str) -> None:
+    """Recursively delete the *translated_cards_dir* after successful archiving."""
+    if not os.path.isdir(translated_cards_dir):
+        logger.info(
+            "translated_cards directory already removed or never created: %s",
+            translated_cards_dir,
+        )
+        return
+    try:
+        shutil.rmtree(translated_cards_dir, ignore_errors=True)
+        if os.path.exists(translated_cards_dir):
+            logger.warning(
+                "Failed to fully remove %s — some files may remain",
+                translated_cards_dir,
+            )
+        else:
+            logger.info("Removed temporary directory %s", translated_cards_dir)
+    except Exception as exc:
+        logger.error("Error removing %s: %s", translated_cards_dir, exc)
+
+
+def _count_failed_cards(job_id: int) -> int:
+    """Count cards with status 'failed' for the given *job_id*."""
+    db_path = settings.sqlite_db_path
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        cursor = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM cards WHERE job_id = ? AND status = 'failed'",
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
