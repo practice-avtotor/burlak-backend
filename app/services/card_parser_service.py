@@ -27,7 +27,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-import openpyxl  # type: ignore[import-untyped]
+import openpyxl
+from openpyxl.worksheet.worksheet import Worksheet
 
 from app.services.normalizer import (
     clean_part_number,
@@ -355,7 +356,7 @@ class CardParserService:
 
     def _extract_parts_from_sheet(
         self,
-        ws: openpyxl.worksheet.worksheet.Worksheet,
+        ws: Worksheet,
         sheet_name: str,
         part_no_col: int,
         qty_col: int,
@@ -448,9 +449,7 @@ class CardParserService:
         return parts
 
     @staticmethod
-    def _cell_value(
-        ws: openpyxl.worksheet.worksheet.Worksheet, row: int, col: int
-    ) -> Any:
+    def _cell_value(ws: Worksheet, row: int, col: int) -> Any:
         """Read a cell value from an openpyxl worksheet.
 
         Returns ``None`` for out-of-bounds access instead of raising.

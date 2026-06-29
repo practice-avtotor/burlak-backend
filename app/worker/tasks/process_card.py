@@ -6,7 +6,7 @@ import re
 import traceback
 import zipfile
 
-import openpyxl  # type: ignore[import-untyped]
+import openpyxl
 from celery import Task  # type: ignore[import-untyped]
 
 from app.core.config import get_settings

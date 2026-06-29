@@ -130,7 +130,14 @@ class ComparisonService:
         if not records:
             logger.warning("No card materials JSON files found in %s", job_dir)
             return pd.DataFrame(
-                columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_RU, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
+                columns=[
+                    COL_PART_NO,
+                    COL_NAME_CN,
+                    COL_NAME_RU,
+                    COL_NAME_EN,
+                    COL_QTY,
+                    COL_CARD_NUMBER,
+                ]
             )
 
         return _aggregate_cards_data(records)
@@ -182,8 +189,10 @@ class ComparisonService:
         # Classify discrepancies
         only_in_bom_mask = merged["_merge"] == "left_only"
         only_in_cards_mask = merged["_merge"] == "right_only"
-        qty_mismatch_mask = (~only_in_bom_mask) & (~only_in_cards_mask) & (
-            merged[COL_QTY_BOM] != merged[COL_QTY_CARDS]
+        qty_mismatch_mask = (
+            (~only_in_bom_mask)
+            & (~only_in_cards_mask)
+            & (merged[COL_QTY_BOM] != merged[COL_QTY_CARDS])
         )
 
         merged[COL_TYPE] = ""
@@ -251,7 +260,9 @@ class ComparisonService:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        discrepancies: pd.DataFrame = comparison_result.get("discrepancies", pd.DataFrame())
+        discrepancies: pd.DataFrame = comparison_result.get(
+            "discrepancies", pd.DataFrame()
+        )
         summary: dict[str, int] = comparison_result.get("summary", {})
 
         import xlsxwriter
@@ -639,7 +650,9 @@ def _load_cards_from_dir(cards_dir: Path) -> list[dict[str, Any]]:
         # process_card saves each card's parts as a JSON list directly
         if isinstance(data, list):
             parts = data
-            card_number = str(parts[0].get("card_no", fpath.stem)) if parts else fpath.stem
+            card_number = (
+                str(parts[0].get("card_no", fpath.stem)) if parts else fpath.stem
+            )
         elif isinstance(data, dict):
             # Legacy format inside card_materials: {"card_number": ..., "parts": [...]}
             card_number = data.get("card_number", fpath.stem)
@@ -672,7 +685,9 @@ def _load_cards_legacy(job_dir: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
     for fpath in sorted(job_dir.iterdir()):
-        if not fpath.name.startswith("card_") or not fpath.name.endswith("_materials.json"):
+        if not fpath.name.startswith("card_") or not fpath.name.endswith(
+            "_materials.json"
+        ):
             continue
         try:
             with open(fpath, encoding="utf-8") as f:
@@ -704,12 +719,19 @@ def _aggregate_cards_data(records: list[dict[str, Any]]) -> pd.DataFrame:
     """
     if not records:
         return pd.DataFrame(
-            columns=[COL_PART_NO, COL_NAME_CN, COL_NAME_RU, COL_NAME_EN, COL_QTY, COL_CARD_NUMBER]
+            columns=[
+                COL_PART_NO,
+                COL_NAME_CN,
+                COL_NAME_RU,
+                COL_NAME_EN,
+                COL_QTY,
+                COL_CARD_NUMBER,
+            ]
         )
 
     df = pd.DataFrame(records)
 
-    agg_cols = {
+    agg_cols: dict[str, Any] = {
         COL_NAME_CN: "first",
         COL_NAME_EN: "first",
         COL_QTY: "sum",

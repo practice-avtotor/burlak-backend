@@ -17,7 +17,7 @@ import os
 from collections import defaultdict
 from typing import Any
 
-import openpyxl  # type: ignore[import-untyped]
+import openpyxl
 
 logger = logging.getLogger(__name__)
 
