@@ -37,8 +37,8 @@ def unpack(self: Task, job_id: int) -> None:
                     or filename.split("/")[-1].startswith(".")
                 ):
                     continue
-                # We only process xlsx cards
-                if filename.endswith(".xlsx"):
+                # We process xlsx and xls cards
+                if filename.endswith((".xlsx", ".xls")):
                     card_paths.append(filename)
 
         logger.info(
