@@ -48,6 +48,7 @@ class Discrepancy:
     discrepancy_type: str
     config_name: str = ""  # К какой комплектации относится
     fuzzy_matched_to: str = ""  # Исходный парт-номер из BOM при fuzzy match
+    name_ru: str = ""
 
     def __str__(self) -> str:
         config_info = f" [{self.config_name[:40]}]" if self.config_name else ""
@@ -155,6 +156,7 @@ def compare_single_config(
                 card_numbers=[],
                 discrepancy_type=DiscrepancyType.ONLY_IN_BOM,
                 config_name=config_name,
+                name_ru=getattr(cards_data, "part_names_ru", {}).get(part_no, ""),
             )
         )
 
@@ -180,6 +182,7 @@ def compare_single_config(
                 card_numbers=card_numbers,
                 discrepancy_type=DiscrepancyType.ONLY_IN_CARDS,
                 config_name=config_name,
+                name_ru=getattr(cards_data, "part_names_ru", {}).get(part_no, ""),
             )
         )
 
@@ -204,6 +207,7 @@ def compare_single_config(
                 discrepancy_type=DiscrepancyType.FUZZY_MATCH,
                 config_name=config_name,
                 fuzzy_matched_to=cards_pn,  # ← номер из карт (для справки)
+                name_ru=getattr(cards_data, "part_names_ru", {}).get(cards_pn, ""),
             )
         )
 
@@ -230,6 +234,7 @@ def compare_single_config(
                     card_numbers=card_numbers,
                     discrepancy_type=DiscrepancyType.QUANTITY_MISMATCH,
                     config_name=config_name,
+                    name_ru=getattr(cards_data, "part_names_ru", {}).get(part_no, ""),
                 )
             )
         else:
@@ -302,6 +307,7 @@ def compare_single_config_cached(
                 card_numbers=[],
                 discrepancy_type=DiscrepancyType.ONLY_IN_BOM,
                 config_name=config_name,
+                name_ru=getattr(cards_data, "part_names_ru", {}).get(part_no, ""),
             )
         )
 
@@ -327,6 +333,7 @@ def compare_single_config_cached(
                 card_numbers=card_numbers,
                 discrepancy_type=DiscrepancyType.ONLY_IN_CARDS,
                 config_name=config_name,
+                name_ru=getattr(cards_data, "part_names_ru", {}).get(part_no, ""),
             )
         )
 
@@ -352,6 +359,7 @@ def compare_single_config_cached(
                 discrepancy_type=DiscrepancyType.FUZZY_MATCH,
                 config_name=config_name,
                 fuzzy_matched_to=bom_pn,
+                name_ru=getattr(cards_data, "part_names_ru", {}).get(cards_pn, ""),
             )
         )
 
@@ -378,6 +386,7 @@ def compare_single_config_cached(
                     card_numbers=card_numbers,
                     discrepancy_type=DiscrepancyType.QUANTITY_MISMATCH,
                     config_name=config_name,
+                    name_ru=getattr(cards_data, "part_names_ru", {}).get(part_no, ""),
                 )
             )
         else:

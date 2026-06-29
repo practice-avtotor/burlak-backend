@@ -881,6 +881,7 @@ class CardPart:
     quantity: float
     source_card: str
     source_sheet: str
+    name_ru: str = ""
 
 
 @dataclass
@@ -904,6 +905,7 @@ class CardsData:
     original_part_numbers: dict[str, str] = field(
         default_factory=dict
     )  # cleaned_part_no -> оригинальный (с тире и т.д.)
+    part_names_ru: dict[str, str] = field(default_factory=dict)
     part_sources: dict[str, list[tuple[str, str, float]]] = field(default_factory=dict)
     card_results: list[CardParseResult] = field(default_factory=list)
     total_cards_processed: int = 0

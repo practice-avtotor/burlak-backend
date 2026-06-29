@@ -403,7 +403,7 @@ def generate_discrepancy_report(
     disc_headers = [
         "Каталожный номер",
         "Название (кит.)",
-        "Название (англ.)",
+        "Название (рус.)",
         "Комплектация",
         "Кол-во в BOM",
         "Кол-во в картах",
@@ -435,7 +435,7 @@ def generate_discrepancy_report(
 
         ws.write(ri, 0, disc.part_number, fmt)
         ws.write(ri, 1, disc.name_cn, fmt)
-        ws.write(ri, 2, disc.name_en, fmt)
+        ws.write(ri, 2, disc.name_ru if disc.name_ru else disc.name_en, fmt)
         ws.write(ri, 3, disc.config_name[:70] if disc.config_name else "", fmt)
         ws.write(ri, 4, disc.qty_bom, cell_num_fmt)
         ws.write(ri, 5, disc.qty_cards, cell_num_fmt)

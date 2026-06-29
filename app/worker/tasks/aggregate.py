@@ -57,6 +57,7 @@ def aggregate(self: Task, job_id: int) -> None:
         card_results = []
         all_parts: dict[str, float] = {}
         original_part_numbers: dict[str, str] = {}
+        part_names_ru: dict[str, str] = {}
 
         if os.path.exists(cards_dir):
             for fpath in sorted(Path(cards_dir).glob("**/*.json")):
@@ -79,12 +80,14 @@ def aggregate(self: Task, job_id: int) -> None:
                 for p in parts_list:
                     part_no = p["part_no"]
                     qty = p["qty"]
+                    name_ru = p.get("name_ru", "")
                     card_parts.append(
                         CardPart(
                             part_number=part_no,
                             quantity=qty,
                             source_card=card_no,
                             source_sheet=p["sheet_name"],
+                            name_ru=name_ru,
                         )
                     )
                     norm_pn = normalize_part_number(part_no)
@@ -92,6 +95,8 @@ def aggregate(self: Task, job_id: int) -> None:
                     all_parts[norm_pn] = all_parts.get(norm_pn, 0.0) + qty
                     if norm_pn not in original_part_numbers:
                         original_part_numbers[norm_pn] = part_no
+                    if name_ru:
+                        part_names_ru[norm_pn] = name_ru
 
                 card_results.append(
                     CardParseResult(
@@ -114,6 +119,7 @@ def aggregate(self: Task, job_id: int) -> None:
         cards_data = CardsData(
             all_parts=all_parts,
             original_part_numbers=original_part_numbers,
+            part_names_ru=part_names_ru,
             card_results=card_results,
             total_cards_processed=len(card_results),
             total_sheets_processed=sum(len(cr.sheets) for cr in card_results),
