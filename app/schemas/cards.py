@@ -14,7 +14,9 @@ class CardSheetInfo:
     operation_name: str = ""
     is_valid: bool = False
     has_data: bool = False
-    max_data_row: int = 0  # Maximum data rows on this sheet (guards against false vertical split)
+    max_data_row: int = (
+        0  # Maximum data rows on this sheet (guards against false vertical split)
+    )
 
 
 @dataclass

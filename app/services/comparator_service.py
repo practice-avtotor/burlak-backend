@@ -510,9 +510,7 @@ def compare_all_configs(
         for part_no, qty in bom.config_quantities[config_name].items():
             if part_no in bom.parts:
                 parts_for_config[part_no] = PartInfo(
-                    part_number=bom.parts[
-                        part_no
-                    ].part_number,  # ← ORIGINAL format!
+                    part_number=bom.parts[part_no].part_number,  # ← ORIGINAL format!
                     name_cn=bom.parts[part_no].name_cn,
                     name_en=bom.parts[part_no].name_en,
                     quantity=qty,
@@ -570,7 +568,9 @@ def compare_all_configs(
                     result = future.result()
                     results_by_index[idx] = result
                 except Exception as e:
-                    logger.error("Error comparing configuration %d: %s", idx + 1, e)                    # Restore original order
+                    logger.error(
+                        "Error comparing configuration %d: %s", idx + 1, e
+                    )  # Restore original order
             for i in range(total_configs):
                 if i in results_by_index:
                     result = results_by_index[i]

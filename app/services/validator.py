@@ -298,7 +298,8 @@ class ValidationPipeline:
                         data = zf.read(mf)
                         if len(data) == 0:
                             result.add_warning(
-                                "content",                                    f"Empty media file: {mf}",
+                                "content",
+                                f"Empty media file: {mf}",
                             )
                     except Exception as e:
                         result.add_error(

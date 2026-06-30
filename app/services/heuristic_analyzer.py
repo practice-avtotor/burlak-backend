@@ -618,7 +618,7 @@ def extract_card_number_from_filepath(file_path: str) -> str:
 
 def _normalize_card_number(card_no: str) -> str:
     """Normalise card number, fixing common data-entry errors.        Fixes:
-      - Double-letter prefix typo → corrected prefix
+    - Double-letter prefix typo → corrected prefix
     """
     if card_no.upper().startswith("SSQRT"):
         normalized = "SQRT" + card_no[5:]

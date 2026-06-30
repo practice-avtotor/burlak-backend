@@ -1,10 +1,6 @@
-# Burlak Backend
-
-BOM parsing and comparison system for automotive manufacturing.# burlak-backend
-=======
-=======
->>>>>>> main
 # BOM Verification System Backend (Burlak Backend)
+
+BOM parsing and comparison system for automotive manufacturing.
 
 This is the backend repository for the BOM Verification System. The system matches Bill of Materials (BOM) spreadsheets against assembly operational cards for automotive manufacturing, translates Chinese material names and card text into Russian, and generates discrepancy reports.
 
@@ -14,7 +10,7 @@ This is the backend repository for the BOM Verification System. The system match
 * FastAPI (Uvicorn)
 * Celery (Redis Broker and Backend)
 * SQLite in WAL mode (aiosqlite for FastAPI, standard sqlite3 for Celery tasks)
-* openpyxl & pandas (Excel parsing and comparison engine)
+* openpyxl, xlrd, & xlsxwriter (Excel parsing and comparison engine)
 * httpx (ML service HTTP integration)
 
 ## Architecture Overview
@@ -23,7 +19,7 @@ The system processes large datasets asynchronously using a Celery pipeline:
 1. **Unpacking:** The ZIP archive containing operational cards is parsed. Card filenames are registered in SQLite.
 2. **Structure Analysis:** Representative snapshots of BOM sheets and operational cards are sent to the ML service to determine column coordinates and matching keys.
 3. **Card Processing:** Workers parse cards in parallel directly from the ZIP stream, translate text, and write intermediate JSON parts list and translated sheets to disk.
-4. **Aggregation:** Card data is merged with the master BOM sheet using pandas, calculating deficits and surplus materials.
+4. **Aggregation:** Card data is matched against the master BOM sheet using custom Python matching algorithms, calculating deficits and surplus materials.
 5. **Packaging:** Results are zipped into a final download package, and temporary files are cleaned up.
 
 ### Database Division
@@ -35,12 +31,12 @@ The system processes large datasets asynchronously using a Celery pipeline:
 ## Directory Structure
 
 ```
-backend/
-├── app/
-│   ├── api/                           # HTTP routing and validation layers
+.
+├── app/                               # Core application code
+│   ├── api/                           # HTTP routing and validation layers (v1)
 │   │   └── v1/
 │   ├── core/                          # System configurations, exceptions, storage management
-│   ├── db/                            # Database models, connection handling, and repositories
+│   ├── db/                            # Persistence layer (async_repository.py and sync_repository.py)
 │   ├── schemas/                       # Pydantic schemas for request/response serialization
 │   ├── services/                      # Core business logic (parsers, adapters, matching)
 │   ├── worker/                        # Celery application initialization and tasks pipeline
@@ -48,9 +44,9 @@ backend/
 │   └── main.py                        # FastAPI entrypoint
 ├── tests/                             # Test suite (unit, integration, e2e)
 ├── Dockerfile                         # Application container description
-├── docker-compose.yml                 # Local development multi-container orchestration
-├── pyproject.toml
-└── uv.lock
+├── docker-compose.dev.yml             # Local development infrastructure/stack orchestration
+├── pyproject.toml                     # Dependency and project config
+└── uv.lock                            # Lockfile
 ```
 
 ---
@@ -75,10 +71,11 @@ backend/
    ```
 
 3. Configure environment variables in `.env`:
-   * `DB_URL`: SQLite connection URL (e.g., `sqlite:///./dev.db`)
+   * `DB_URL`: SQLite connection URL or filepath (e.g., `sqlite:///./dev.db` or `./dev.db`)
    * `REDIS_URL`: Redis server URL (e.g., `redis://localhost:6379/0`)
-   * `ML_SERVICE_URL`: Endpoint of the ML service (e.g., `http://localhost:8000`)
-   * `STORAGE_PATH`: Directory path for saving upload and result files
+   * `ML_SERVICE_URL`: Endpoint of the ML service (e.g., `http://localhost:5000`)
+   * `STORAGE_PATH`: Directory path for saving upload and result files (e.g., `./data`)
+   * `CHUNK_SIZE_BYTES`: Size of upload chunks (must be set to `20971520` bytes / 20 MB)
 
 ---
 
@@ -92,9 +89,9 @@ uv run uvicorn app.main:app --reload
 The API documentation will be available at `http://127.0.0.1:8000/docs`.
 
 ### 2. Start the Celery Worker
-Run the background worker instance:
+Run the background worker instance (configured with a concurrency of 2 to avoid SQLite transaction locks):
 ```bash
-uv run celery -A app.worker.celery_app worker --loglevel=info
+uv run python -m celery -A app.worker.celery_app worker --loglevel=info --concurrency=2
 ```
 
 ---
@@ -125,7 +122,7 @@ All files must fully comply with mypy strict type hinting guidelines.
 
 ## Key Constraints for Developers
 
-* **No zipfile.extractall():** Never unpack the 1.3 GB zip archive to disk. Stream individual card bytes directly from the archive using `zipfile.open()`.
+* **No zipfile.extractall():** Never unpack the huge zip archive to disk. Stream individual card bytes directly from the archive using `zipfile.open()`.
 * **SQLite WAL Writes:** All database writes inside Celery tasks must use the synchronous repository and the `BEGIN IMMEDIATE` transaction block to avoid locking/concurrency errors.
 * **LibreOffice CLI Dependency:** The OS environment must have `soffice` (LibreOffice CLI) installed to handle legacy `.xls` format conversion in workers.
 * **Response Streaming:** Download endpoints for results must stream binary data using `StreamingResponse` or `FileResponse` to avoid loading massive archives into memory.
@@ -134,10 +131,23 @@ All files must fully comply with mypy strict type hinting guidelines.
 
 ## Local development with Docker
 
-```bash
-# Run infrastructure (Redis, ML-Mock, Celery)
-docker compose -f docker-compose.dev.yml up -d
+You have two options for running the application using Docker Compose:
 
-# Run the backend locally
+### Option A: Run the entire stack in Docker
+This spins up Redis, the ML Mock service, the FastAPI web app, and the Celery worker all within Docker:
+```bash
+docker compose -f docker-compose.dev.yml up --build
+```
+
+### Option B: Run infrastructure only in Docker, backend locally
+This spins up external dependencies (Redis and the ML Mock service) in Docker containers, allowing you to run and debug the FastAPI web app and Celery worker on your local machine:
+```bash
+# Start Redis and ML Mock in the background
+docker compose -f docker-compose.dev.yml up -d redis ml-mock
+
+# Start the local FastAPI server
 uv run uvicorn app.main:app --reload
+
+# Start the local Celery worker
+uv run python -m celery -A app.worker.celery_app worker --loglevel=info --concurrency=2
 ```

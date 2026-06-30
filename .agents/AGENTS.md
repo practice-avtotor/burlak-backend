@@ -3,11 +3,25 @@
 ## Commands
 
 - **Install deps:** `uv sync`
+- **Run Web Server (Local):** `uv run uvicorn app.main:app --reload`
+- **Run Celery Worker (Local):** `uv run python -m celery -A app.worker.celery_app worker --loglevel=info --concurrency=2`
+- **Run Dev Stack (Docker):** `docker compose -f docker-compose.dev.yml up --build`
 - **Test All:** `uv run pytest`
-- **Lint/Format:** `uv run ruff check . --fix`
+- **Lint:** `uv run ruff check . --fix`
+- **Format:** `uv run ruff format .`
 - **Type Check:** `uv run mypy .`
 
 > mypy is configured with `strict = true` in `pyproject.toml`. Passing mypy with `Any` everywhere is not acceptable.
+
+---
+
+## Directory Map & Roles
+
+- `app/api/v1/`: HTTP routers, request validation, response streaming.
+- `app/worker/tasks/`: Celery task orchestrators (pure orchestration, no inline business logic).
+- `app/services/`: Business services (archive streaming, excel parsing, translations, comparison).
+- `app/db/`: Persistence layer (async `aiosqlite` in FastAPI, sync standard `sqlite3` in Celery).
+- `app/core/`: Application settings, custom exceptions, and local chunk/file storage logic.
 
 ---
 

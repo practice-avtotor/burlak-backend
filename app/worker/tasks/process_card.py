@@ -32,7 +32,10 @@ def process_card(self: Task, job_id: int, card_path: str) -> None:
 
     except Exception as exc:
         logger.error(
-            "Failed to process card %s for job %d: %s", card_path, job_id, exc,
+            "Failed to process card %s for job %d: %s",
+            card_path,
+            job_id,
+            exc,
             exc_info=True,
         )
 

@@ -2250,9 +2250,7 @@ def _detect_repeating_pattern_boundaries(
         in_block = False
         block_start = 0
         empty_count = 0
-        SCAN_COLS = (
-            8  # Columns A-H (wider scan where data may be right-aligned)
-        )
+        SCAN_COLS = 8  # Columns A-H (wider scan where data may be right-aligned)
 
         for r in range(1, max_row + 1):
             # Check data in columns A-H

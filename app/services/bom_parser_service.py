@@ -232,9 +232,7 @@ def parse_bom(file_path: str, sheets_config: list[dict[str, Any]]) -> BOMData:
     try:
         wb = openpyxl.load_workbook(file_path, data_only=True)
     except Exception as e:
-        logger.warning(
-            "Failed to load in normal mode (%s), trying read_only", e
-        )
+        logger.warning("Failed to load in normal mode (%s), trying read_only", e)
         wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
 
     # Check if data_only=True produced empty results (formulas never cached)
@@ -290,9 +288,7 @@ def parse_bom(file_path: str, sheets_config: list[dict[str, Any]]) -> BOMData:
         all_config_quantities: dict[str, dict[str, float]] = {}
         all_config_names: list[str] = []
         all_global_names: dict[str, tuple[str, str]] = {}
-        seen_config_names: dict[
-            str, str
-        ] = {}  # config_name -> normalised original
+        seen_config_names: dict[str, str] = {}  # config_name -> normalised original
 
         for sheet_name in sheet_names:
             try:
@@ -353,10 +349,7 @@ def parse_bom(file_path: str, sheets_config: list[dict[str, Any]]) -> BOMData:
                     kw in sheet_name_lower for kw in _MULTI_SHEET_BOM_KEYWORDS
                 )
 
-                if (
-                    (not config_cols or len(config_cols) == 0)
-                    and qty_col > 0
-                ):
+                if (not config_cols or len(config_cols) == 0) and qty_col > 0:
                     # Multi-sheet style: all sheets go into one aggregated config
                     if is_multi_sheet:
                         config_name = _MULTI_SHEET_COMBINED_CONFIG
