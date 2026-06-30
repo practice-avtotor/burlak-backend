@@ -467,5 +467,190 @@ class TestParserClassify:
         """When mapping_config has no classification rules, defaults are used."""
         cfg = {"cards": {"columns": {}, "table_boundaries": {}}}
         parser = CardParserService(cfg)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Multi-card sheet tests
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestMultiCard:
+    """Tests for multi-card sheets (multiple cards stacked vertically)."""
+
+    def _multi_card_config(self) -> dict:
+        """Return mapping config with multi_card table_boundaries."""
+        return {
+            "cards": {
+                "file_classification_rules": {
+                    "service_keywords": ["封面", "目录", "template"],
+                    "operational_keywords": ["作业指导书"],
+                },
+                "table_boundaries": {
+                    "header_row": 1,
+                    "data_start_row": 2,
+                    "end_markers": ["签字", "审核"],
+                    "type": "multi_card",
+                    "multi_card": {
+                        "separator_type": "empty_rows",
+                        "empty_rows_separator": 1,
+                        "has_repeating_header": True,
+                        "parts_header_row": 1,
+                        "parts_data_start_row": 1,
+                        "max_cards": 0,
+                        "card_end_markers": ["签字", "审核"],
+                    },
+                },
+                "columns": {
+                    "part_no": 1,
+                    "qty": 3,
+                    "name": 2,
+                },
+                "sheets": {
+                    "default_type": "operational",
+                },
+            }
+        }
+
+    def test_two_cards_separated_by_empty_row(self):
+        """Two cards separated by one empty row — both should be parsed."""
+        cfg = self._multi_card_config()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    # Card 1
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 2],
+                    ["P002", "Nut", 4],
+                    # empty separator row
+                    [None, None, None],
+                    # Card 2
+                    ["Part No", "Name", "Qty"],
+                    ["P003", "Washer", 6],
+                    ["P004", "Screw", 1],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None, f"Unexpected error: {result.error}"
+        assert len(result.parts) == 4
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 2
+
+        # Card 1 boundary
+        start1, end1 = result.card_boundaries[0]
+        assert start1 == 2  # first data row
+        assert end1 == 3    # last data row of card 1
+
+        # Card 2 boundary
+        start2, end2 = result.card_boundaries[1]
+        assert start2 == 5  # first row of card 2 (header)
+        assert end2 == 7    # last data row of card 2
+
+        # Verify parts belong to correct cards
+        card1_parts = [p for p in result.parts if start1 <= p.row <= end1]
+        card2_parts = [p for p in result.parts if start2 <= p.row <= end2]
+        assert len(card1_parts) == 2
+        assert len(card2_parts) == 2
+        assert card1_parts[0].part_number == "P001"
+        assert card2_parts[0].part_number == "P003"
+
+    def test_three_cards_different_sizes(self):
+        """Three cards of different sizes — verifies variable-length card support."""
+        cfg = self._multi_card_config()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    # Card 1 — 2 parts
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 1],
+                    ["P002", "Nut", 2],
+                    # separator
+                    [None, None, None],
+                    # Card 2 — 4 parts
+                    ["Part No", "Name", "Qty"],
+                    ["P003", "Washer", 3],
+                    ["P004", "Screw", 4],
+                    ["P005", "Pin", 5],
+                    ["P006", "Clip", 6],
+                    # separator
+                    [None, None, None],
+                    # Card 3 — 1 part
+                    ["Part No", "Name", "Qty"],
+                    ["P007", "Spring", 7],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None
+        assert len(result.parts) == 7
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 3
+
+        # Verify counts per card
+        # Card 1: rows 2-3 (P001, P002) = 2 parts
+        # Card 2: rows 6-8 (P003-P006) = 4 parts (header at row 5 skipped)
+        # Card 3: row 11 (P007) = 1 part (header at row 10 skipped)
+        for (s, e), expected_count in zip(result.card_boundaries, [2, 4, 1]):
+            card_parts = [p for p in result.parts if s <= p.row <= e]
+            assert len(card_parts) == expected_count, (
+                f"Card ({s},{e}): expected {expected_count} parts, got {len(card_parts)}"
+            )
+
+    def test_multi_card_with_end_marker(self):
+        """End marker stops current card, next card starts after separator."""
+        cfg = self._multi_card_config()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    # Card 1
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 2],
+                    ["签字确认", None, None],  # end marker
+                    # separator
+                    [None, None, None],
+                    # Card 2
+                    ["Part No", "Name", "Qty"],
+                    ["P002", "Nut", 4],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None
+        # Both cards are parsed: P001 from card 1, P002 from card 2
+        assert len(result.parts) == 2
+        assert result.parts[0].part_number == "P001"
+        assert result.parts[1].part_number == "P002"
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 2
+
+        # Card 1 should end at the end marker row
+        start1, end1 = result.card_boundaries[0]
+        assert end1 == 2  # P001 row, end marker excluded
+
+    def test_multi_card_single_card_falls_back(self):
+        """A multi_card config with only one card should still work (card_boundaries has 1 entry)."""
+        cfg = self._multi_card_config()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 2],
+                    ["P002", "Nut", 4],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None
+        assert len(result.parts) == 2
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 1
         # Should still classify using built-in defaults
         assert parser.classify("封面.xlsx") == "service"
