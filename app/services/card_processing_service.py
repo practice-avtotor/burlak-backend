@@ -239,9 +239,7 @@ class CardProcessingService:
                 )
                 os.makedirs(os.path.dirname(sf_dest_xlsx_path), exist_ok=True)
 
-                sf_name_col = (
-                    mapping_config.get("cards", {}).get("columns", {}).get("name", 0)
-                )
+                sf_name_col = parser.name_col
                 sf_wb = openpyxl.load_workbook(sf, data_only=False)
                 try:
                     for p in sf_parse_result.parts:
@@ -296,6 +294,7 @@ class CardProcessingService:
                     mapping_config=mapping_config,
                     translated_cards_dir=translated_cards_dir,
                     card_materials_dir=card_materials_dir,
+                    name_col=parser.name_col,
                 )
             else:
                 # Single card — original logic
@@ -337,7 +336,7 @@ class CardProcessingService:
                     )
 
                 # Save translated workbook
-                name_col = mapping_config.get("cards", {}).get("columns", {}).get("name", 0)
+                name_col = parser.name_col
                 wb = openpyxl.load_workbook(io.BytesIO(card_bytes), data_only=False)
                 try:
                     for p in parse_result.parts:
@@ -392,6 +391,7 @@ class CardProcessingService:
         mapping_config: dict[str, Any],
         translated_cards_dir: str,
         card_materials_dir: str,
+        name_col: int = 0,
     ) -> None:
         """Process a multi-card sheet by splitting parts into sub-cards.
 
@@ -412,8 +412,6 @@ class CardProcessingService:
                     p.row,
                 )
                 sub_card_parts[-1].append(p)
-
-        name_col = mapping_config.get("cards", {}).get("columns", {}).get("name", 0)
 
         for idx, parts_group in enumerate(sub_card_parts):
             if not parts_group:

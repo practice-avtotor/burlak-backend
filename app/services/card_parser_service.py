@@ -197,10 +197,22 @@ class CardParserService:
         self._classification_rules: dict[str, Any] | None = cards_cfg.get(
             "file_classification_rules"
         )
-        self._table_boundaries: dict[str, Any] = cards_cfg.get("table_boundaries", {})
+
+        # ── Adapter: normalise new nested format → flat format ──────────
+        # New format: cards.formats.card_format_A.sheets[0].{columns, table_boundaries}
+        # Old format: cards.{columns, table_boundaries}
+        formats = cards_cfg.get("formats")
+        if formats and isinstance(formats, dict):
+            # New format detected — extract from the first matching format
+            tb, columns = self._adapt_nested_format(cards_cfg)
+        else:
+            # Old flat format
+            tb = cards_cfg.get("table_boundaries", {})
+            columns = cards_cfg.get("columns", {})
+
+        self._table_boundaries: dict[str, Any] = tb
 
         # ML boundary schema adapter: handle list or single integer for header_row
-        tb = cards_cfg.get("table_boundaries", {})
         header_rows = tb.get("header_rows", [1])
         if isinstance(header_rows, list) and header_rows:
             self._header_row = header_rows[0] if isinstance(header_rows[0], int) else 1
@@ -210,13 +222,16 @@ class CardParserService:
             self._header_row = tb.get("header_row", 1)
 
         # ML column schema adapter: handle nested dictionaries (e.g. {"col_index": 1})
-        columns_raw = cards_cfg.get("columns", {})
+        # Also map name_cn → name for backward compatibility
         self._columns = {}
-        for key, val in columns_raw.items():
+        for key, val in columns.items():
             if isinstance(val, dict):
                 self._columns[key] = val.get("col_index", 0)
             else:
                 self._columns[key] = int(val) if val else 0
+        # If name_cn is present but name is not, alias name_cn → name
+        if "name_cn" in self._columns and "name" not in self._columns:
+            self._columns["name"] = self._columns["name_cn"]
 
         self._sheets_cfg: dict[str, Any] = cards_cfg.get("sheets", {})
 
@@ -224,6 +239,38 @@ class CardParserService:
         self._multi_card_cfg: dict[str, Any] | None = tb.get("multi_card")
         self._is_multi_card = tb.get("type") == "multi_card" and bool(self._multi_card_cfg)
         self._last_card_boundaries: list[tuple[int, int]] | None = None
+
+    @staticmethod
+    def _adapt_nested_format(
+        cards_cfg: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Extract flat ``table_boundaries`` and ``columns`` from the new nested
+        ``cards.formats`` structure.
+
+        Returns:
+            Tuple of (table_boundaries, columns) extracted from the first
+            sheet of the first matching format.
+        """
+        formats: dict = cards_cfg.get("formats", {})
+        # Pick the first format that has sheets
+        for fmt_name, fmt_body in formats.items():
+            sheets = fmt_body.get("sheets", [])
+            if sheets:
+                sheet0 = sheets[0]
+                tb = sheet0.get("table_boundaries", {})
+                cols = sheet0.get("columns", {})
+                # Merge end_markers from format-level if not on sheet level
+                if not tb.get("end_markers"):
+                    fmt_end = fmt_body.get("end_markers")
+                    if fmt_end:
+                        tb["end_markers"] = fmt_end
+                return tb, cols
+        return {}, {}
+
+    @property
+    def name_col(self) -> int:
+        """The 1-based column index for the name field (adapted from any format)."""
+        return self._columns.get("name", 0)
 
     # ------------------------------------------------------------------
     # Public API
