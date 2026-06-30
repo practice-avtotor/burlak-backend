@@ -39,7 +39,7 @@ async def get_job(db: aiosqlite.Connection, job_id: int) -> dict[str, Any] | Non
 
 async def try_start_processing(db: aiosqlite.Connection, job_id: int) -> bool:
     """Atomically change status to 'processing' if all conditions are met.
-    Returns Ture if status has changed.
+    Returns True if status has changed.
     """
     now = datetime.now(UTC).isoformat()
     async with db.execute(

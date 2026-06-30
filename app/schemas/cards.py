@@ -7,19 +7,19 @@ from app.services.splitter import SplitStatistics
 
 @dataclass
 class CardSheetInfo:
-    """Информация об одном листе операционной карты."""
+    """Information about a single operational card sheet."""
 
     card_number: str
     sheet_name: str
     operation_name: str = ""
     is_valid: bool = False
     has_data: bool = False
-    max_data_row: int = 0  # Максимальное количество строк данных на листе (для защиты от ложного вертикального split)
+    max_data_row: int = 0  # Maximum data rows on this sheet (guards against false vertical split)
 
 
 @dataclass
 class CardPart:
-    """Деталь, найденная в операционной карте."""
+    """A single part found in an operational card."""
 
     part_number: str
     quantity: float
@@ -30,25 +30,25 @@ class CardPart:
 
 @dataclass
 class CardParseResult:
-    """Результат парсинга одной операционной карты."""
+    """Result of parsing a single operational card."""
 
     card_number: str
     file_path: str
     sheets: list[CardSheetInfo]
     parts: list[CardPart]
     aggregated_parts: dict[str, float]  # part_number -> total_qty
-    is_service_file: bool = False  # True если файл был определён как служебный
-    tables_extracted: int = 0  # Количество таблиц (операций) найденных во всех листах
+    is_service_file: bool = False  # True if the file was classified as a service file
+    tables_extracted: int = 0  # Number of tables (operations) found across all sheets
 
 
 @dataclass
 class CardsData:
-    """Результат парсинга всех операционных карт."""
+    """Result of parsing all operational cards."""
 
-    all_parts: dict[str, float]  # part_number -> суммарное количество
+    all_parts: dict[str, float]  # part_number -> total quantity
     original_part_numbers: dict[str, str] = field(
         default_factory=dict
-    )  # cleaned_part_no -> оригинальный (с тире и т.д.)
+    )  # cleaned_part_no -> original (with dashes etc.)
     part_names_ru: dict[str, str] = field(default_factory=dict)
     part_sources: dict[str, list[tuple[str, str, float]]] = field(default_factory=dict)
     card_results: list[CardParseResult] = field(default_factory=list)
@@ -58,5 +58,5 @@ class CardsData:
     service_files_skipped: int = 0
     corrupted_files: list[str] = field(default_factory=list)
     corrupted_files_detailed: list[dict[str, str]] = field(default_factory=list)
-    total_tables_extracted: int = 0  # Количество таблиц (операций) во всех листах
+    total_tables_extracted: int = 0  # Number of tables (operations) across all sheets
     split_stats: SplitStatistics | None = None

@@ -1,12 +1,12 @@
-"""Модуль валидации выходных файлов после разделения.
+"""Output file validation module for post-split verification.
 
-Многоуровневый pipeline:
-  1. Structural: ZIP целостность, XML well-formed, обязательные файлы present
-  2. Schema: sheetData существует, колонки обнаружены, строки данных > 0
-  3. Content: изображения загружаемые, формулы парсибельные
-  4. Semantic: part numbers валидны, количества числовые, нет дубликатов
+Multi-level pipeline:
+  1. Structural: ZIP integrity, XML well-formed, required files present
+  2. Schema: sheetData exists, columns detected, data rows > 0
+  3. Content: images loadable, formulas parseable
+  4. Semantic: part numbers valid, quantities numeric, no duplicates
 
-Используется после каждого split для гарантии корректности выходных файлов.
+Used after each split to guarantee output file correctness.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Пространства имён OOXML
+# OOXML namespaces
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 
 @dataclass
 class ValidationIssue:
-    """Одна проблема, обнаруженная при валидации."""
+    """A single issue found during validation."""
 
     level: str  # "structural", "schema", "content", "semantic"
     severity: str  # "error", "warning"
@@ -37,7 +37,7 @@ class ValidationIssue:
 
 @dataclass
 class ValidationResult:
-    """Результат валидации одного файла."""
+    """Validation result for a single file."""
 
     file_path: str
     is_valid: bool = True
@@ -76,16 +76,16 @@ class ValidationResult:
 
 
 class ValidationPipeline:
-    """Многоуровневый pipeline валидации .xlsx файлов.
+    """Multi-level validation pipeline for .xlsx files.
 
-    Уровни:
-      1. Structural: ZIP целостность, XML well-formed, обязательные файлы present
-      2. Schema: sheetData существует, колонки обнаружены, строки данных > 0
-      3. Content: изображения загружаемые, формулы парсибельные
-      4. Semantic: part numbers валидны, количества числовые, нет дубликатов
-      5. Split-quality: проверка качества после split (изображения, строки)
+    Levels:
+      1. Structural: ZIP integrity, XML well-formed, required files present
+      2. Schema: sheetData exists, columns detected, data rows > 0
+      3. Content: images loadable, formulas parseable
+      4. Semantic: part numbers valid, quantities numeric, no duplicates
+      5. Split-quality: post-split quality check (images, rows)
 
-    Используется после каждого split для гарантии корректности выходных файлов.
+    Used after each split to guarantee output file correctness.
     """
 
     def __init__(
@@ -111,23 +111,23 @@ class ValidationPipeline:
         self.max_file_size_mb = max_file_size_mb
 
     def validate(self, file_path: str) -> ValidationResult:
-        """Запустить полный pipeline валидации на одном файле.
+        """Run the full validation pipeline on a single file.
 
         Args:
-            file_path: Путь к .xlsx файлу.
+            file_path: Path to the .xlsx file.
 
         Returns:
-            ValidationResult с is_valid и списком issues.
+            ValidationResult with is_valid and list of issues.
         """
         result = ValidationResult(file_path=file_path)
 
         if not os.path.isfile(file_path):
-            result.add_error("structural", f"Файл не найден: {file_path}")
+            result.add_error("structural", f"File not found: {file_path}")
             return result
 
         ext = os.path.splitext(file_path)[1].lower()
         if ext != ".xlsx":
-            result.add_warning("structural", f"Не .xlsx формат: {ext}")
+            result.add_warning("structural", f"Not .xlsx format: {ext}")
             return result
 
         if self.check_structural:
@@ -150,10 +150,10 @@ class ValidationPipeline:
         return result
 
     def validate_batch(self, file_paths: list[str]) -> list[ValidationResult]:
-        """Валидировать список файлов.
+        """Validate a list of files.
 
         Returns:
-            Список ValidationResult для каждого файла.
+            List of ValidationResult for each file.
         """
         results = []
         for fp in file_paths:
@@ -161,31 +161,31 @@ class ValidationPipeline:
         return results
 
     def _check_structural(self, file_path: str, result: ValidationResult) -> None:
-        """Уровень 1: Структурная целостность.
+        """Level 1: Structural integrity.
 
-        Проверяет:
-          - Файл является валидным ZIP
-          - Обязательные OOXML файлы присутствуют
-          - XML well-formed
-          - Размер файла не превышает лимит
+        Checks:
+          - File is a valid ZIP
+          - Required OOXML files are present
+          - XML is well-formed
+          - File size does not exceed the limit
         """
-        # Размер файла
+        # File size
         try:
             size_mb = os.path.getsize(file_path) / (1024 * 1024)
             if size_mb > self.max_file_size_mb:
                 result.add_warning(
                     "structural",
-                    f"Файл слишком большой: {size_mb:.1f} MB > {self.max_file_size_mb} MB",
+                    f"File too large: {size_mb:.1f} MB > {self.max_file_size_mb} MB",
                 )
         except OSError:
             pass
 
-        # ZIP целостность
+        # ZIP integrity
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
                 names = set(zf.namelist())
 
-                # Обязательные файлы
+                # Required files
                 required = [
                     "[Content_Types].xml",
                     "xl/workbook.xml",
@@ -196,17 +196,17 @@ class ValidationPipeline:
                     if req not in names:
                         result.add_error(
                             "structural",
-                            f"Отсутствует обязательный файл: {req}",
+                            f"Missing required file: {req}",
                         )
 
-                # Хотя бы один sheet XML
+                # At least one sheet XML
                 if not any(
                     n.endswith(".xml") and "sheet" in n.lower() and "_rels" not in n
                     for n in names
                 ):
-                    result.add_error("structural", "Нет sheet XML файлов")
+                    result.add_error("structural", "No sheet XML files found")
 
-                # XML well-formed для критических файлов
+                # XML well-formed for critical files
                 critical_xmls = ["xl/workbook.xml", "[Content_Types].xml"]
                 for cx in critical_xmls:
                     if cx in names:
@@ -216,35 +216,34 @@ class ValidationPipeline:
                         except ET.ParseError as e:
                             result.add_error(
                                 "structural",
-                                f"XML не well-formed: {cx}: {e}",
+                                f"XML not well-formed: {cx}: {e}",
                             )
 
-                # Проверка CRC для ВСЕХ файлов
-                # ВАЖНО: WPS Office и другие генераторы OOXML могут создавать
-                # файлы с некорректными CRC-суммами, которые при этом
-                # нормально открываются в Excel. Поэтому CRC ошибки
-                # downgrade-ятся до WARNING, а не ERROR.
+                # CRC check for ALL files.
+                # IMPORTANT: WPS Office and other OOXML generators may create
+                # files with invalid CRC checksums that still open correctly
+                # in Excel. Therefore CRC errors are downgraded to WARNING.
                 for info in zf.infolist():
                     try:
                         zf.read(info.filename)
                     except (zipfile.BadZipFile, Exception) as e:
                         result.add_warning(
                             "structural",
-                            f"CRC ошибка (не критично): {info.filename}: {e}",
+                            f"CRC error (non-critical): {info.filename}: {e}",
                         )
 
         except zipfile.BadZipFile as e:
-            result.add_error("structural", f"Невалидный ZIP: {e}")
+            result.add_error("structural", f"Invalid ZIP: {e}")
         except OSError as e:
-            result.add_error("structural", f"Ошибка чтения файла: {e}")
+            result.add_error("structural", f"File read error: {e}")
 
     def _check_schema(self, file_path: str, result: ValidationResult) -> None:
-        """Уровень 2: Схемная валидация.
+        """Level 2: Schema validation.
 
-        Проверяет:
-          - sheetData существует в каждом листе
-          - Есть хотя бы одна строка данных
-          - Количество строк > 0
+        Checks:
+          - sheetData exists in every sheet
+          - At least one data row
+          - Row count > 0
         """
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
@@ -262,53 +261,52 @@ class ValidationPipeline:
                             if sheet_data is None:
                                 result.add_error(
                                     "schema",
-                                    f"Нет sheetData в {name}",
+                                    f"No sheetData in {name}",
                                 )
                                 continue
 
-                            # Подсчёт строк
+                            # Row count
                             row_count = len(sheet_data.findall(f"{{{NS_MAIN}}}row"))
                             if row_count == 0:
                                 result.add_warning(
                                     "schema",
-                                    f"Пустой sheetData (0 строк) в {name}",
+                                    f"Empty sheetData (0 rows) in {name}",
                                 )
                         except ET.ParseError as e:
                             result.add_error(
                                 "schema",
-                                f"Ошибка парсинга sheet XML {name}: {e}",
+                                f"Error parsing sheet XML {name}: {e}",
                             )
         except zipfile.BadZipFile:
-            pass  # Уже обработано на уровне structural
+            pass  # Already handled at structural level
 
     def _check_content(self, file_path: str, result: ValidationResult) -> None:
-        """Уровень 3: Проверка содержимого.
+        """Level 3: Content check.
 
-        Проверяет:
-          - Изображения в xl/media/ имеют корректные форматы
-          - Drawing XML references существуют
+        Checks:
+          - Images in xl/media/ have valid formats
+          - Drawing XML references exist
         """
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
                 names = set(zf.namelist())
                 media_files = [n for n in names if n.startswith("xl/media/")]
 
-                # Проверяем что все media файлы непустые
+                # Check that all media files are non-empty
                 for mf in media_files:
                     try:
                         data = zf.read(mf)
                         if len(data) == 0:
                             result.add_warning(
-                                "content",
-                                f"Пустой медиафайл: {mf}",
+                                "content",                                    f"Empty media file: {mf}",
                             )
                     except Exception as e:
                         result.add_error(
                             "content",
-                            f"Ошибка чтения медиафайла {mf}: {e}",
+                            f"Error reading media file {mf}: {e}",
                         )
 
-                # Проверяем что drawing rels ссылки существуют
+                # Check that drawing rels references exist
                 for name in names:
                     if "drawing" in name and name.endswith(".rels"):
                         try:
@@ -327,7 +325,7 @@ class ValidationPipeline:
                                         resolved_check = resolved
                                     else:
                                         resolved_check = resolved[1:]
-                                    # Проверяем только media references
+                                    # Check only media references
                                     if "media" in resolved_check.lower():
                                         if resolved_check not in names:
                                             result.add_warning(
@@ -336,18 +334,18 @@ class ValidationPipeline:
                                                 f"{target} -> {resolved_check}",
                                             )
                         except Exception:
-                            pass  # Не критично
+                            pass  # Non-critical
 
         except zipfile.BadZipFile:
             pass
 
     def _check_semantic(self, file_path: str, result: ValidationResult) -> None:
-        """Уровень 4: Семантическая валидация (опциональная).
+        """Level 4: Semantic validation (optional).
 
-        Проверяет:
-          - Part numbers в данных выглядят валидно
-          - Количества являются числами
-          - Нет дубликатов part-номеров
+        Checks:
+          - Part numbers in data look valid
+          - Quantities are numeric
+          - No duplicate part numbers
         """
 
         try:
@@ -363,7 +361,7 @@ class ValidationPipeline:
 
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
-                # Простая проверка: хотя бы несколько ячеек с данными
+                # Simple check: at least a few cells with data
                 non_empty = 0
                 for row in ws.iter_rows(max_row=10, max_col=10):
                     for cell in row:
@@ -372,35 +370,35 @@ class ValidationPipeline:
                 if non_empty == 0:
                     result.add_warning(
                         "semantic",
-                        f"Лист '{sheet_name}' не содержит данных",
+                        f"Sheet '{sheet_name}' contains no data",
                         sheet_name=sheet_name,
                     )
             wb.close()
         except Exception as e:
-            result.add_warning("semantic", f"Не удалось проверить семантику: {e}")
+            result.add_warning("semantic", f"Could not check semantics: {e}")
 
     def _check_split_quality(self, file_path: str, result: ValidationResult) -> None:
-        """Уровень 5: Проверка качества после split.
+        """Level 5: Post-split quality check.
 
-        Проверяет:
-          - Наличие изображений (если в оригинале были)
-          - Количество строк в разрезанном файле
-          - Размер файла не слишком мал (признак пустого/битого файла)
+        Checks:
+          - Image presence (if originals had images)
+          - Row count in the split file
+          - File size not too small (sign of empty/corrupted file)
         """
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
                 names = set(zf.namelist())
 
-                # Проверка 1: изображения (если в оригинале были)
+                # Check 1: images (if originals had them)
                 if self.has_images_in_original:
                     media_files = [n for n in names if n.startswith("xl/media/")]
                     if not media_files:
                         result.add_warning(
                             "split-quality",
-                            "Нет изображений в split-файле (в оригинале были)",
+                            "No images in split file (originals had images)",
                         )
 
-                # Проверка 2: количество строк
+                # Check 2: row count
                 if self.expected_min_rows > 0 or self.expected_max_rows > 0:
                     for name in names:
                         if (
@@ -423,7 +421,7 @@ class ValidationPipeline:
                                     ):
                                         result.add_warning(
                                             "split-quality",
-                                            f"Мало строк: {row_count} < {self.expected_min_rows}",
+                                            f"Too few rows: {row_count} < {self.expected_min_rows}",
                                         )
                                     if (
                                         self.expected_max_rows > 0
@@ -431,25 +429,25 @@ class ValidationPipeline:
                                     ):
                                         result.add_warning(
                                             "split-quality",
-                                            f"Много строк: {row_count} > {self.expected_max_rows * 1.5:.0f}",
+                                            f"Too many rows: {row_count} > {self.expected_max_rows * 1.5:.0f}",
                                         )
                             except ET.ParseError:
                                 pass
-                            break  # Проверяем только первый sheet XML
+                            break  # Check only the first sheet XML
 
-                # Проверка 3: размер файла
+                # Check 3: file size
                 try:
                     size_bytes = os.path.getsize(file_path)
-                    if size_bytes < 1024:  # < 1 KB — подозрительно мало
+                    if size_bytes < 1024:  # < 1 KB — suspiciously small
                         result.add_warning(
                             "split-quality",
-                            f"Файл очень маленький: {size_bytes} байт",
+                            f"File is very small: {size_bytes} bytes",
                         )
                 except OSError:
                     pass
 
         except zipfile.BadZipFile:
-            pass  # Уже обработано на уровне structural
+            pass  # Already handled at structural level
 
 
 def validate_split_file(
@@ -458,15 +456,15 @@ def validate_split_file(
     expected_min_rows: int = 0,
     expected_max_rows: int = 0,
 ) -> ValidationResult:
-    """Быстрая валидация одного split-файла (structural + schema + split-quality).
+    """Quick validation of one split file (structural + schema + split-quality).
 
-    Удобная функция-обёртка для использования в splitter.
+    Convenience wrapper for use in splitter.
 
     Args:
-        file_path: Путь к .xlsx файлу.
-        has_images_in_original: True если в исходном файле были изображения.
-        expected_min_rows: Минимальное ожидаемое количество строк (0 = без проверки).
-        expected_max_rows: Максимальное ожидаемое количество строк (0 = без проверки).
+        file_path: Path to the .xlsx file.
+        has_images_in_original: True if the source file had images.
+        expected_min_rows: Minimum expected row count (0 = skip check).
+        expected_max_rows: Maximum expected row count (0 = skip check).
     """
     pipeline = ValidationPipeline(
         check_structural=True,
@@ -482,15 +480,15 @@ def validate_split_file(
 
 
 def validate_split_file_lenient(file_path: str) -> ValidationResult:
-    """Ленивая валидация split-файла: только открываемость через openpyxl.
+    """Lenient validation of a split file: only check openpyxl openability.
 
-    Используется как последний шанс перед отправкой в corrupted_cards.
-    WPS-созданные файлы могут иметь некорректные CRC, нестандартные
-    структуры OOXML, но при этом быть функционально валидными.
-    Эта проверка эмулирует поведение MS Excel: «если файл открывается — он валидный».
+    Used as a last resort before sending to corrupted_cards.
+    WPS-generated files may have invalid CRC, non-standard OOXML structures,
+    yet be functionally valid.
+    This check emulates MS Excel behaviour: if the file opens, it is valid.
 
     Returns:
-        ValidationResult с is_valid = True если файл можно открыть через openpyxl.
+        ValidationResult with is_valid = True if the file can be opened via openpyxl.
     """
     result = ValidationResult(file_path=file_path)
     try:
@@ -506,7 +504,7 @@ def validate_split_file_lenient(file_path: str) -> ValidationResult:
     except Exception as e:
         result.add_error(
             "structural",
-            f"Файл не открывается даже через openpyxl: {e}",
+            f"File cannot be opened even via openpyxl: {e}",
         )
     return result
 
@@ -515,11 +513,11 @@ def validate_and_quarantine(
     file_path: str,
     quarantine_dir: str,
 ) -> ValidationResult:
-    """Валидировать файл и переместить повреждённые в quarantine/.
+    """Validate a file and move corrupted ones to quarantine/.
 
     Args:
-        file_path: Путь к .xlsx файлу.
-        quarantine_dir: Директория для повреждённых файлов.
+        file_path: Path to the .xlsx file.
+        quarantine_dir: Directory for corrupted files.
 
     Returns:
         ValidationResult.
@@ -534,18 +532,18 @@ def validate_and_quarantine(
             dest = os.path.join(quarantine_dir, os.path.basename(file_path))
             shutil.copy2(file_path, dest)
 
-            # Записываем .error файл
+            # Write .error file
             error_path = dest + ".error"
             with open(error_path, "w", encoding="utf-8") as f:
                 for issue in result.errors:
                     f.write(f"[{issue.level}] {issue.message}\n")
 
             logger.warning(
-                "Файл перемещён в quarantine: %s (%d ошибок)",
+                "File moved to quarantine: %s (%d errors)",
                 os.path.basename(file_path),
                 len(result.errors),
             )
         except Exception as e:
-            logger.error("Не удалось переместить в quarantine: %s", e)
+            logger.error("Failed to move to quarantine: %s", e)
 
     return result
