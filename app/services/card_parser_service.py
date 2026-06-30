@@ -610,10 +610,11 @@ class CardParserService:
             # Found the start of a card
             card_start = row_idx
 
-            # Determine where the parts table starts within this card
+            # Determine where the parts table starts within this card.
+            # parts_data_start_row is a 1-based relative offset from card_start.
+            #   parts_data_start_row=1 → data starts at card_start (first row of card)
+            #   parts_data_start_row=2 → data starts at card_start + 1 (skip 1 header row)
             if parts_data_start > 0:
-                # parts_data_start is relative offset from card_start
-                # (e.g. 2 means skip header row, start at card_start + 1)
                 actual_data_start = card_start + parts_data_start - 1
             else:
                 # Relative to card start: skip header rows
