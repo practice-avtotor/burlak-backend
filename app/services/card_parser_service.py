@@ -71,9 +71,9 @@ class MLCardParseResult:
     original_part_numbers: dict[str, str]  # normalized → original form
     sheets_parsed: int = 0
     error: str | None = None
-    card_boundaries: list[tuple[int, int]] | None = None
-    """For multi-card sheets: list of (start_row, end_row) for each card found.
-    ``None`` for single-card sheets."""
+    card_boundaries: list[tuple[str, int, int]] | None = None
+    """For multi-card sheets: list of (sheet_name, start_row, end_row) for each
+    card found.  ``None`` for single-card sheets."""
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +238,7 @@ class CardParserService:
         # Multi-card configuration (from table_boundaries.multi_card)
         self._multi_card_cfg: dict[str, Any] | None = tb.get("multi_card")
         self._is_multi_card = tb.get("type") == "multi_card" and bool(self._multi_card_cfg)
-        self._last_card_boundaries: list[tuple[int, int]] | None = None
+        self._last_card_boundaries: list[tuple[str, int, int]] | None = None
 
     @staticmethod
     def _adapt_nested_format(
@@ -347,6 +347,10 @@ class CardParserService:
         original_pns: dict[str, str] = {}
         sheets_parsed = 0
         validation_error: str | None = None
+        # Reset multi-card boundaries at the start of each parse_card call
+        # so single-card sheets don't inherit stale boundaries from a previous
+        # multi-card sheet in the same workbook.
+        self._last_card_boundaries = None
 
         wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
         try:
@@ -558,7 +562,7 @@ class CardParserService:
         name_col: int,
         data_start: int,
         multi_card_cfg: dict[str, Any],
-    ) -> tuple[list[ParsedPart], list[tuple[int, int]]]:
+    ) -> tuple[list[ParsedPart], list[tuple[str, int, int]]]:
         """Extract parts from multiple cards stacked vertically in one sheet.
 
         Cards are separated by empty rows (configurable via
@@ -578,7 +582,8 @@ class CardParserService:
         Returns:
             Tuple of (parts, card_boundaries) where:
             - parts: List of :class:`ParsedPart` from all cards.
-            - card_boundaries: List of (start_row, end_row) for each card.
+            - card_boundaries: List of (sheet_name, start_row, end_row) for
+              each card.
         """
         empty_rows_sep = multi_card_cfg.get("empty_rows_separator", 1)
         parts_data_start = multi_card_cfg.get("parts_data_start_row", 0)
@@ -589,7 +594,7 @@ class CardParserService:
         row_idx = data_start
         cards_found = 0
         parts: list[ParsedPart] = []
-        card_boundaries: list[tuple[int, int]] = []
+        card_boundaries: list[tuple[str, int, int]] = []
 
         while row_idx <= max_row:
             # Skip empty rows (separators between cards)
@@ -621,8 +626,8 @@ class CardParserService:
                 part_no_col, name_col,
             )
 
-            # Record boundary
-            card_boundaries.append((card_start, card_end))
+            # Record boundary with sheet name for cross-sheet safety
+            card_boundaries.append((sheet_name, card_start, card_end))
 
             # Extract parts from this card
             for r in range(actual_data_start, card_end + 1):

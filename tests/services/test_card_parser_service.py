@@ -538,19 +538,21 @@ class TestMultiCard:
         assert result.card_boundaries is not None
         assert len(result.card_boundaries) == 2
 
-        # Card 1 boundary
-        start1, end1 = result.card_boundaries[0]
+        # Card 1 boundary: (sheet_name, start, end)
+        sheet1, start1, end1 = result.card_boundaries[0]
+        assert sheet1 == "S"
         assert start1 == 2  # first data row
         assert end1 == 3    # last data row of card 1
 
         # Card 2 boundary
-        start2, end2 = result.card_boundaries[1]
+        sheet2, start2, end2 = result.card_boundaries[1]
+        assert sheet2 == "S"
         assert start2 == 5  # first row of card 2 (header)
         assert end2 == 7    # last data row of card 2
 
         # Verify parts belong to correct cards
-        card1_parts = [p for p in result.parts if start1 <= p.row <= end1]
-        card2_parts = [p for p in result.parts if start2 <= p.row <= end2]
+        card1_parts = [p for p in result.parts if p.source_sheet == sheet1 and start1 <= p.row <= end1]
+        card2_parts = [p for p in result.parts if p.source_sheet == sheet2 and start2 <= p.row <= end2]
         assert len(card1_parts) == 2
         assert len(card2_parts) == 2
         assert card1_parts[0].part_number == "P001"
@@ -594,10 +596,11 @@ class TestMultiCard:
         # Card 1: rows 2-3 (P001, P002) = 2 parts
         # Card 2: rows 6-8 (P003-P006) = 4 parts (header at row 5 skipped)
         # Card 3: row 11 (P007) = 1 part (header at row 10 skipped)
-        for (s, e), expected_count in zip(result.card_boundaries, [2, 4, 1]):
-            card_parts = [p for p in result.parts if s <= p.row <= e]
+        for (sh, s, e), expected_count in zip(result.card_boundaries, [2, 4, 1]):
+            assert sh == "S"
+            card_parts = [p for p in result.parts if p.source_sheet == sh and s <= p.row <= e]
             assert len(card_parts) == expected_count, (
-                f"Card ({s},{e}): expected {expected_count} parts, got {len(card_parts)}"
+                f"Card ({sh},{s},{e}): expected {expected_count} parts, got {len(card_parts)}"
             )
 
     def test_multi_card_with_end_marker(self):
@@ -630,7 +633,8 @@ class TestMultiCard:
         assert len(result.card_boundaries) == 2
 
         # Card 1 should end at the end marker row
-        start1, end1 = result.card_boundaries[0]
+        sh1, start1, end1 = result.card_boundaries[0]
+        assert sh1 == "S"
         assert end1 == 2  # P001 row, end marker excluded
 
     def test_multi_card_single_card_falls_back(self):

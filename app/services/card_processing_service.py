@@ -386,7 +386,7 @@ class CardProcessingService:
         filename: str,
         card_bytes: bytes,
         parse_result: MLCardParseResult,
-        card_boundaries: list[tuple[int, int]],
+        card_boundaries: list[tuple[str, int, int]],
         card_no: str,
         mapping_config: dict[str, Any],
         translated_cards_dir: str,
@@ -397,19 +397,20 @@ class CardProcessingService:
 
         Each sub-card gets its own translated XLSX and materials JSON.
         """
-        # Group parts by which card boundary they fall into
+        # Group parts by which card boundary they fall into.
+        # Boundaries now include sheet_name to prevent cross-sheet mixing.
         sub_card_parts: list[list[ParsedPart]] = [[] for _ in card_boundaries]
 
         for p in parse_result.parts:
-            for idx, (start_row, end_row) in enumerate(card_boundaries):
-                if start_row <= p.row <= end_row:
+            for idx, (sheet_name, start_row, end_row) in enumerate(card_boundaries):
+                if p.source_sheet == sheet_name and start_row <= p.row <= end_row:
                     sub_card_parts[idx].append(p)
                     break
             else:
                 # Part doesn't fall into any boundary — assign to the last card
                 logger.warning(
-                    "Part row %d not in any card boundary, assigning to last card",
-                    p.row,
+                    "Part row %d (sheet '%s') not in any card boundary, assigning to last card",
+                    p.row, p.source_sheet,
                 )
                 sub_card_parts[-1].append(p)
 
