@@ -71,6 +71,9 @@ class MLCardParseResult:
     original_part_numbers: dict[str, str]  # normalized → original form
     sheets_parsed: int = 0
     error: str | None = None
+    card_boundaries: list[tuple[int, int]] | None = None
+    """For multi-card sheets: list of (start_row, end_row) for each card found.
+    ``None`` for single-card sheets."""
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +220,11 @@ class CardParserService:
 
         self._sheets_cfg: dict[str, Any] = cards_cfg.get("sheets", {})
 
+        # Multi-card configuration (from table_boundaries.multi_card)
+        self._multi_card_cfg: dict[str, Any] | None = tb.get("multi_card")
+        self._is_multi_card = tb.get("type") == "multi_card" and bool(self._multi_card_cfg)
+        self._last_card_boundaries: list[tuple[int, int]] | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -317,6 +325,7 @@ class CardParserService:
                     name_col,
                     data_start,
                     end_markers,
+                    table_boundaries=self._table_boundaries,
                 )
                 if sheet_parts:
                     sheets_parsed += 1
@@ -366,6 +375,7 @@ class CardParserService:
             original_part_numbers=original_pns,
             sheets_parsed=sheets_parsed,
             error=validation_error,
+            card_boundaries=self._last_card_boundaries,
         )
 
     def _extract_parts_from_sheet(
@@ -377,12 +387,30 @@ class CardParserService:
         name_col: int,
         data_start: int,
         end_markers: list[str],
+        table_boundaries: dict[str, Any] | None = None,
     ) -> list[ParsedPart]:
         """Extract material parts from a single worksheet.
 
         Reads rows starting from ``data_start`` until an end marker is
         encountered or the sheet is exhausted.
+
+        If ``table_boundaries.type == "multi_card"``, delegates to
+        :meth:`_extract_parts_multi_card` which iterates over all cards
+        in the sheet, separated by empty rows.
         """
+        # Dispatch to multi-card handler if configured
+        if table_boundaries and table_boundaries.get("type") == "multi_card":
+            multi_card_cfg = table_boundaries.get("multi_card")
+            if multi_card_cfg:
+                parts, boundaries = self._extract_parts_multi_card(
+                    ws, sheet_name, part_no_col, qty_col, name_col,
+                    data_start, multi_card_cfg,
+                )
+                # Store boundaries on the instance so _parse_operational_card
+                # can read them when building MLCardParseResult
+                self._last_card_boundaries = boundaries
+                return parts
+
         parts: list[ParsedPart] = []
         consecutive_empty = 0
 
@@ -469,6 +497,242 @@ class CardParserService:
                 continue
 
         return parts
+
+    # ------------------------------------------------------------------
+    # Multi-card support
+    # ------------------------------------------------------------------
+
+    def _extract_parts_multi_card(
+        self,
+        ws: Worksheet,
+        sheet_name: str,
+        part_no_col: int,
+        qty_col: int,
+        name_col: int,
+        data_start: int,
+        multi_card_cfg: dict[str, Any],
+    ) -> tuple[list[ParsedPart], list[tuple[int, int]]]:
+        """Extract parts from multiple cards stacked vertically in one sheet.
+
+        Cards are separated by empty rows (configurable via
+        ``multi_card_cfg.empty_rows_separator``).  Each card may have a
+        repeating header that is skipped.
+
+        Args:
+            ws: openpyxl worksheet.
+            sheet_name: Name of the sheet (for logging).
+            part_no_col: 1-based column index for part numbers.
+            qty_col: 1-based column index for quantities (0 = none).
+            name_col: 1-based column index for names (0 = none).
+            data_start: Row to start scanning from (1-based).
+            multi_card_cfg: The ``multi_card`` sub-dict from
+                ``table_boundaries``.
+
+        Returns:
+            Tuple of (parts, card_boundaries) where:
+            - parts: List of :class:`ParsedPart` from all cards.
+            - card_boundaries: List of (start_row, end_row) for each card.
+        """
+        empty_rows_sep = multi_card_cfg.get("empty_rows_separator", 1)
+        parts_data_start = multi_card_cfg.get("parts_data_start_row", 0)
+        card_end_markers: list[str] = multi_card_cfg.get("card_end_markers", [])
+        max_cards = multi_card_cfg.get("max_cards", 0)
+
+        max_row = ws.max_row or 0
+        row_idx = data_start
+        cards_found = 0
+        parts: list[ParsedPart] = []
+        card_boundaries: list[tuple[int, int]] = []
+
+        while row_idx <= max_row:
+            # Skip empty rows (separators between cards)
+            while row_idx <= max_row and self._is_row_empty(ws, row_idx, part_no_col, name_col):
+                row_idx += 1
+
+            if row_idx > max_row:
+                break
+
+            if max_cards > 0 and cards_found >= max_cards:
+                break
+
+            # Found the start of a card
+            card_start = row_idx
+
+            # Determine where the parts table starts within this card
+            if parts_data_start > 0:
+                # parts_data_start is relative offset from card_start
+                # (e.g. 2 means skip header row, start at card_start + 1)
+                actual_data_start = card_start + parts_data_start - 1
+            else:
+                # Relative to card start: skip header rows
+                actual_data_start = card_start + 1
+
+            # Find the end of this card (empty row or end marker)
+            card_end = self._find_card_end(
+                ws, actual_data_start, max_row,
+                empty_rows_sep, card_end_markers,
+                part_no_col, name_col,
+            )
+
+            # Record boundary
+            card_boundaries.append((card_start, card_end))
+
+            # Extract parts from this card
+            for r in range(actual_data_start, card_end + 1):
+                raw_pn = self._cell_value(ws, r, part_no_col)
+                if raw_pn is None:
+                    continue
+
+                pn_str = str(raw_pn).strip()
+                if not pn_str:
+                    continue
+
+                # Check for strikethrough
+                try:
+                    cell = ws.cell(row=r, column=part_no_col)
+                    if cell and cell.font and cell.font.strike:
+                        continue
+                except Exception:
+                    pass
+
+                # Validate part number
+                cleaned_pn = clean_part_number(pn_str)
+                if not is_valid_part_number(cleaned_pn, strict=True):
+                    continue
+
+                # Quantity
+                qty = 1.0
+                if qty_col > 0:
+                    raw_qty = self._cell_value(ws, r, qty_col)
+                    qty = normalize_quantity(raw_qty, default=1.0)
+                    if qty <= 0:
+                        qty = 1.0
+
+                # Name
+                name = ""
+                if name_col > 0:
+                    raw_name = self._cell_value(ws, r, name_col)
+                    name = str(raw_name).strip() if raw_name is not None else ""
+
+                parts.append(
+                    ParsedPart(
+                        part_number=pn_str,
+                        quantity=qty,
+                        name=name,
+                        source_sheet=sheet_name,
+                        row=r,
+                    )
+                )
+
+            cards_found += 1
+            row_idx = card_end + 1
+
+            # Skip end marker row if present (it was detected by _find_card_end
+            # which returned card_end = marker_row - 1, so row_idx = marker_row)
+            if row_idx <= max_row:
+                raw_check = self._cell_value(ws, row_idx, part_no_col)
+                if raw_check is not None:
+                    check_str = str(raw_check).strip()
+                    if any(m in check_str for m in card_end_markers):
+                        row_idx += 1
+
+        logger.info(
+            "Multi-card sheet '%s': found %d card(s), extracted %d part(s)",
+            sheet_name, cards_found, len(parts),
+        )
+        return parts, card_boundaries
+
+    @staticmethod
+    def _is_row_empty(ws: Worksheet, row: int, col1: int, col2: int) -> bool:
+        """Check if a row is empty in the given columns.
+
+        Returns ``True`` if both ``col1`` and ``col2`` are ``None`` or blank.
+        """
+        v1 = None
+        try:
+            v1 = ws.cell(row=row, column=col1).value
+        except Exception:
+            pass
+        if v1 is not None and str(v1).strip():
+            return False
+
+        if col2 > 0 and col2 != col1:
+            try:
+                v2 = ws.cell(row=row, column=col2).value
+                if v2 is not None and str(v2).strip():
+                    return False
+            except Exception:
+                pass
+
+        return True
+
+    @staticmethod
+    def _find_card_end(
+        ws: Worksheet,
+        start_row: int,
+        max_row: int,
+        empty_rows_sep: int,
+        end_markers: list[str],
+        part_no_col: int,
+        name_col: int,
+    ) -> int:
+        """Find the last data row of the current card.
+
+        Scans from ``start_row`` upward until it finds a separator
+        (empty rows or end marker).  Returns the last row that belongs
+        to the card.
+        """
+        consecutive_empty = 0
+
+        for row_idx in range(start_row, max_row + 1):
+            raw_pn = None
+            try:
+                raw_pn = ws.cell(row=row_idx, column=part_no_col).value
+            except Exception:
+                pass
+
+            # Check end markers in part_no column
+            if raw_pn is not None:
+                pn_str = str(raw_pn).strip()
+                if any(marker in pn_str for marker in end_markers):
+                    return row_idx - 1
+
+            # Check end markers in name column
+            if name_col > 0 and name_col != part_no_col:
+                try:
+                    raw_name = ws.cell(row=row_idx, column=name_col).value
+                    if raw_name is not None:
+                        name_str = str(raw_name).strip()
+                        if any(marker in name_str for marker in end_markers):
+                            return row_idx - 1
+                except Exception:
+                    pass
+
+            # Count consecutive empty rows
+            is_empty = True
+            try:
+                v = ws.cell(row=row_idx, column=part_no_col).value
+                if v is not None and str(v).strip():
+                    is_empty = False
+            except Exception:
+                pass
+
+            if is_empty and name_col > 0 and name_col != part_no_col:
+                try:
+                    v = ws.cell(row=row_idx, column=name_col).value
+                    if v is not None and str(v).strip():
+                        is_empty = False
+                except Exception:
+                    pass
+
+            if is_empty:
+                consecutive_empty += 1
+                if consecutive_empty >= empty_rows_sep:
+                    return row_idx - empty_rows_sep
+            else:
+                consecutive_empty = 0
+
+        return max_row
 
     @staticmethod
     def _cell_value(ws: Worksheet, row: int, col: int) -> Any:
