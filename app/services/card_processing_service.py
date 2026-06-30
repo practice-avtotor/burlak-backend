@@ -6,13 +6,12 @@ import logging
 import os
 import traceback
 import zipfile
+from typing import Any
 
 import openpyxl
 
 from app.core.config import get_settings
 from app.db import sync_repository
-from typing import Any
-
 from app.services.card_parser_service import (
     _DEFAULT_SERVICE_KEYWORDS,
     CardParserService,

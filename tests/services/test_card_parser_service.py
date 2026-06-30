@@ -466,8 +466,7 @@ class TestParserClassify:
     def test_no_rules_uses_defaults(self):
         """When mapping_config has no classification rules, defaults are used."""
         cfg = {"cards": {"columns": {}, "table_boundaries": {}}}
-        parser = CardParserService(cfg)
-
+        CardParserService(cfg)
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Multi-card sheet tests

@@ -251,7 +251,7 @@ class CardParserService:
             Tuple of (table_boundaries, columns) extracted from the first
             sheet of the first matching format.
         """
-        formats: dict = cards_cfg.get("formats", {})
+        formats: dict[str, Any] = cards_cfg.get("formats", {})
         # Pick the first format that has sheets
         for fmt_name, fmt_body in formats.items():
             sheets = fmt_body.get("sheets", [])
@@ -270,7 +270,8 @@ class CardParserService:
     @property
     def name_col(self) -> int:
         """The 1-based column index for the name field (adapted from any format)."""
-        return self._columns.get("name", 0)
+        val = self._columns.get("name", 0)
+        return int(val) if val else 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -462,7 +463,7 @@ class CardParserService:
                 self._last_card_boundaries = boundaries
                 return parts
 
-        parts: list[ParsedPart] = []
+        sheet_parts: list[ParsedPart] = []
         consecutive_empty = 0
 
         # read_only worksheets expose max_row via ws.max_row
@@ -528,7 +529,7 @@ class CardParserService:
 
                 # Store raw PN in ParsedPart so callers can access
                 # the original formatting (dashes, etc.)
-                parts.append(
+                sheet_parts.append(
                     ParsedPart(
                         part_number=pn_str,
                         quantity=qty,
@@ -547,7 +548,7 @@ class CardParserService:
                 )
                 continue
 
-        return parts
+        return sheet_parts
 
     # ------------------------------------------------------------------
     # Multi-card support
