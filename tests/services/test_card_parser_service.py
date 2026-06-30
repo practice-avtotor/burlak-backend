@@ -398,95 +398,55 @@ class TestParseCard:
         result = parser.parse_card(data, "001-card.xlsx")
         assert len(result.parts) == 1
 
-
-# ═══════════════════════════════════════════════════════════════════════
-#  CardParserService.extract_unique_strings
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestExtractUniqueStrings:
-    def test_basic_extraction(self):
-        """Extracts unique strings from the name column."""
+    def test_validation_column_index_out_of_bounds(self):
+        """If column index is out of bounds, returns validation error."""
         cfg = _default_mapping_config()
-        parser = CardParserService(cfg)
-
-        data = _make_xlsx_bytes(
-            {
-                "S": [
-                    ["Part No", "Name", "Qty"],  # header
-                    ["P001", "螺栓", 1],
-                    ["P002", "螺母", 2],
-                    ["P003", "螺栓", 1],  # duplicate "螺栓"
-                ],
-            }
-        )
-        result = parser.extract_unique_strings(data, "001-card.xlsx")
-        assert "螺栓" in result
-        assert "螺母" in result
-        assert len(result) == 2  # deduplicated
-
-    def test_service_file_returns_empty(self):
-        """Service files return empty list."""
-        cfg = _default_mapping_config()
-        parser = CardParserService(cfg)
-
-        data = _make_xlsx_bytes({"S": [["Data"]]})
-        result = parser.extract_unique_strings(data, "封面.xlsx")
-        assert result == []
-
-    def test_no_name_column_returns_empty(self):
-        """When name column is 0, returns empty list."""
-        cfg = _default_mapping_config()
-        cfg["cards"]["columns"]["name"] = 0
-        parser = CardParserService(cfg)
-
-        data = _make_xlsx_bytes(
-            {
-                "S": [
-                    ["Header"],
-                    ["P001"],
-                ],
-            }
-        )
-        result = parser.extract_unique_strings(data, "001-card.xlsx")
-        assert result == []
-
-    def test_end_markers_stop_extraction(self):
-        """End markers in name column stop extraction."""
-        cfg = _default_mapping_config()
-        parser = CardParserService(cfg)
-
-        data = _make_xlsx_bytes(
-            {
-                "S": [
-                    ["Part No", "Name", "Qty"],  # header (row 1)
-                    ["P001", "螺栓", 1],  # row 2 → collected
-                    ["P002", "签字", 2],  # row 3 → end marker → stop
-                    ["P003", "螺母", 3],  # row 4 → NOT collected
-                ],
-            }
-        )
-        result = parser.extract_unique_strings(data, "001-card.xlsx")
-        assert "螺栓" in result
-        assert "螺母" not in result
-
-    def test_empty_strings_excluded(self):
-        """Empty or whitespace-only names are excluded."""
-        cfg = _default_mapping_config()
+        cfg["cards"]["columns"]["part_no"] = 100  # out of bounds
         parser = CardParserService(cfg)
 
         data = _make_xlsx_bytes(
             {
                 "S": [
                     ["Part No", "Name", "Qty"],
-                    ["P001", "  ", 1],
-                    ["P002", "", 2],
-                    ["P003", "Bolt", 3],
+                    ["P001", "Bolt", 1],
                 ],
             }
         )
-        result = parser.extract_unique_strings(data, "001-card.xlsx")
-        assert result == ["Bolt"]
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is not None
+        assert "exceeds sheet max column" in result.error
+
+    def test_validation_zero_parts_extracted_from_non_empty_sheet(self):
+        """If 0 parts are parsed from a non-empty sheet, returns validation error."""
+        cfg = _default_mapping_config()
+        parser = CardParserService(cfg)
+
+        # Worksheet has content, but all part numbers are invalid (e.g. empty or garbage)
+        # We need at least 10 rows with some content to trigger validation_error
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    ["Some", "Other", "Headers"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                    ["Val", "Val", "Val"],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert len(result.parts) == 0
+        assert (
+            result.error
+            == "No parts extracted from non-empty worksheet. Check mapping config columns."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════

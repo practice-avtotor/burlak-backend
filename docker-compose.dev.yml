@@ -1,9 +1,3 @@
-# ============================================
-# docker-compose.dev.yml — для локальной разработки бэкенда
-# Запускает только инфраструктуру (Redis, ML-Mock)
-# Бэкенд запускается отдельно через uvicorn
-# ============================================
-
 services:
   redis:
     image: redis:7-alpine
@@ -19,29 +13,51 @@ services:
 
   ml-mock:
     build:
-      context: ../devops-infrastructure/ml-mock
+      context: .
       dockerfile: Dockerfile
     container_name: dev-ml-mock
+    command: uvicorn app.core.ml_stub:app --host 0.0.0.0 --port 5000
     ports:
       - "5000:5000"
     restart: unless-stopped
 
-  # Опционально: Celery worker для отладки
-  celery-worker:
+  web:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dev-celery-worker
-    command: python -m celery -A app.tasks worker --loglevel=info --concurrency=2
+    container_name: dev-web
+    ports:
+      - "8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
-      DB_URL: ./data/jobs.db
-      STORAGE_PATH: ./data
-      ML_API_URL: http://ml-mock:5000
+      DB_URL: /data/jobs.db
+      STORAGE_PATH: /data
+      ML_SERVICE_URL: http://ml-mock:5000
     volumes:
       - ./data:/data
     depends_on:
       redis:
         condition: service_healthy
+      ml-mock:
+        condition: service_started
     restart: unless-stopped
 
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dev-celery-worker
+    command: python -m celery -A app.worker.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DB_URL: /data/jobs.db
+      STORAGE_PATH: /data
+      ML_SERVICE_URL: http://ml-mock:5000
+    volumes:
+      - ./data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      ml-mock:
+        condition: service_started
+    restart: unless-stopped

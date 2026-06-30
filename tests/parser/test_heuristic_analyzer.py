@@ -21,7 +21,7 @@ from typing import Any
 
 from openpyxl import Workbook
 
-from burlak_parser.heuristic_analyzer import (
+from app.services.heuristic_analyzer import (
     HeuristicAnalyzer,
     clean_part_number,
     extract_card_number,
@@ -1363,12 +1363,12 @@ class TestDetectColumnTypesExtended:
         ]
         ws = _make_ws(data)
         col_types = HeuristicAnalyzer.detect_column_types(ws, [1])
-        pn = col_types.get("part_no", 0)
-        name = col_types.get("name_cn", 0) or col_types.get("name_en", 0)
-        qty = col_types.get("qty", 0)
+        col_types.get("part_no", 0)
+        col_types.get("name_cn", 0) or col_types.get("name_en", 0)
+        col_types.get("qty", 0)
         # All should be 0 or not present — but part_no might fallback to content
         # Meta columns have no part_no keywords, no data with part_no patterns
-        non_meta_cols = {k: v for k, v in col_types.items() if v > 0}
+        {k: v for k, v in col_types.items() if v > 0}
         # "序号" content is numeric → falls into content fallback
         # Accept any reasonable result as long as it doesn't crash
         assert isinstance(col_types, dict)

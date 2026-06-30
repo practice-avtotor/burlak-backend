@@ -57,8 +57,12 @@ class ParsedPart:
 
 
 @dataclass
-class CardParseResult:
-    """Result of parsing one operational card XLSX."""
+class MLCardParseResult:
+    """Result of parsing one operational card XLSX via ML-driven config.
+
+    Renamed from ``CardParseResult`` to avoid collision with
+    :class:`app.schemas.cards.CardParseResult` (different schema).
+    """
 
     file_name: str
     file_type: str  # "operational_card" | "service" | "unknown"
@@ -191,7 +195,26 @@ class CardParserService:
             "file_classification_rules"
         )
         self._table_boundaries: dict[str, Any] = cards_cfg.get("table_boundaries", {})
-        self._columns: dict[str, int] = cards_cfg.get("columns", {})
+
+        # ML boundary schema adapter: handle list or single integer for header_row
+        tb = cards_cfg.get("table_boundaries", {})
+        header_rows = tb.get("header_rows", [1])
+        if isinstance(header_rows, list) and header_rows:
+            self._header_row = header_rows[0] if isinstance(header_rows[0], int) else 1
+        elif isinstance(header_rows, int):
+            self._header_row = header_rows
+        else:
+            self._header_row = tb.get("header_row", 1)
+
+        # ML column schema adapter: handle nested dictionaries (e.g. {"col_index": 1})
+        columns_raw = cards_cfg.get("columns", {})
+        self._columns = {}
+        for key, val in columns_raw.items():
+            if isinstance(val, dict):
+                self._columns[key] = val.get("col_index", 0)
+            else:
+                self._columns[key] = int(val) if val else 0
+
         self._sheets_cfg: dict[str, Any] = cards_cfg.get("sheets", {})
 
     # ------------------------------------------------------------------
@@ -206,7 +229,7 @@ class CardParserService:
         """
         return classify_file(filename, self._classification_rules)
 
-    def parse_card(self, data: bytes, filename: str) -> CardParseResult:
+    def parse_card(self, data: bytes, filename: str) -> MLCardParseResult:
         """Parse an operational card XLSX from raw bytes.
 
         Args:
@@ -214,14 +237,14 @@ class CardParserService:
             filename: Original filename (used for classification and logging).
 
         Returns:
-            :class:`CardParseResult` with extracted parts.
+            :class:`MLCardParseResult` with extracted parts.
 
         Raises:
             ValueError: If the file cannot be opened as XLSX.
         """
         file_type = self.classify(filename)
         if file_type == "service":
-            return CardParseResult(
+            return MLCardParseResult(
                 file_name=filename,
                 file_type="service",
                 parts=[],
@@ -230,7 +253,7 @@ class CardParserService:
             )
         if file_type == "unknown":
             logger.warning("Unknown file type, skipping: %s", filename)
-            return CardParseResult(
+            return MLCardParseResult(
                 file_name=filename,
                 file_type="unknown",
                 parts=[],
@@ -240,74 +263,22 @@ class CardParserService:
 
         return self._parse_operational_card(data, filename)
 
-    def extract_unique_strings(self, data: bytes, filename: str) -> list[str]:
-        """Extract unique translatable strings from an operational card.
-
-        Reads the name column (and any other text columns) to build a
-        deduplicated list of Chinese strings suitable for batch translation.
-
-        Args:
-            data: Raw bytes of the XLSX file.
-            filename: Original filename.
-
-        Returns:
-            Deduplicated list of non-empty strings from the name column.
-        """
-        file_type = self.classify(filename)
-        if file_type != "operational_card":
-            return []
-
-        name_col = self._columns.get("name", 0)
-        if name_col <= 0:
-            return []
-
-        header_row = self._table_boundaries.get("header_row", 1)
-        data_start = self._table_boundaries.get("data_start_row", header_row + 1)
-        end_markers: list[str] = self._table_boundaries.get("end_markers", [])
-
-        seen: set[str] = set()
-        result: list[str] = []
-
-        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-        try:
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                for row in ws.iter_rows(min_row=data_start, max_col=name_col):
-                    if not row or len(row) < name_col:
-                        continue
-                    cell = row[name_col - 1]
-                    val = cell.value
-                    if val is None:
-                        continue
-                    text = str(val).strip()
-                    if not text:
-                        continue
-                    # Stop at end markers
-                    if any(marker in text for marker in end_markers):
-                        break
-                    if text not in seen:
-                        seen.add(text)
-                        result.append(text)
-        finally:
-            wb.close()
-
-        return result
-
     # ------------------------------------------------------------------
     # Internal helpers
+
     # ------------------------------------------------------------------
 
-    def _parse_operational_card(self, data: bytes, filename: str) -> CardParseResult:
+    def _parse_operational_card(self, data: bytes, filename: str) -> MLCardParseResult:
         """Core parsing logic for operational card files."""
         part_no_col = self._columns.get("part_no", 0)
         qty_col = self._columns.get("qty", 0)
         name_col = self._columns.get("name", 0)
-        header_row = self._table_boundaries.get("header_row", 1)
+        header_row = self._header_row
         data_start = self._table_boundaries.get("data_start_row", header_row + 1)
         end_markers: list[str] = self._table_boundaries.get("end_markers", [])
 
         if part_no_col <= 0:
-            return CardParseResult(
+            return MLCardParseResult(
                 file_name=filename,
                 file_type="operational_card",
                 parts=[],
@@ -320,11 +291,24 @@ class CardParserService:
         aggregated: dict[str, float] = {}
         original_pns: dict[str, str] = {}
         sheets_parsed = 0
+        validation_error: str | None = None
 
         wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
         try:
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
+                # Validate column indices against max_column
+                if ws.max_column:
+                    if part_no_col > ws.max_column:
+                        validation_error = f"part_no column index {part_no_col} exceeds sheet max column {ws.max_column}"
+                        break
+                    if qty_col > 0 and qty_col > ws.max_column:
+                        validation_error = f"qty column index {qty_col} exceeds sheet max column {ws.max_column}"
+                        break
+                    if name_col > 0 and name_col > ws.max_column:
+                        validation_error = f"name column index {name_col} exceeds sheet max column {ws.max_column}"
+                        break
+
                 sheet_parts = self._extract_parts_from_sheet(
                     ws,
                     sheet_name,
@@ -342,16 +326,46 @@ class CardParserService:
                         aggregated[norm_pn] = aggregated.get(norm_pn, 0.0) + p.quantity
                         if norm_pn not in original_pns:
                             original_pns[norm_pn] = p.part_number
+
+            # Check if 0 parts were parsed from sheets that have substantial content
+            if not parts and not validation_error:
+                has_content = False
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    non_empty_rows = 0
+                    max_scan = min(ws.max_row or 0, 100)
+                    max_col_check = min(ws.max_column or 0, 20)
+                    for r in range(1, max_scan + 1):
+                        row_has_val = False
+                        for c in range(1, max_col_check + 1):
+                            try:
+                                v = ws.cell(row=r, column=c).value
+                                if v is not None and str(v).strip():
+                                    row_has_val = True
+                                    break
+                            except Exception:
+                                pass
+                        if row_has_val:
+                            non_empty_rows += 1
+                            if non_empty_rows >= 10:
+                                has_content = True
+                                break
+                    if has_content:
+                        break
+
+                if has_content:
+                    validation_error = "No parts extracted from non-empty worksheet. Check mapping config columns."
         finally:
             wb.close()
 
-        return CardParseResult(
+        return MLCardParseResult(
             file_name=filename,
             file_type="operational_card",
             parts=parts,
             aggregated_parts=aggregated,
             original_part_numbers=original_pns,
             sheets_parsed=sheets_parsed,
+            error=validation_error,
         )
 
     def _extract_parts_from_sheet(
@@ -405,6 +419,14 @@ class CardParserService:
                 pn_str = str(raw_pn).strip()
                 if not pn_str:
                     continue
+
+                # Check for strikethrough
+                try:
+                    cell = ws.cell(row=row_idx, column=part_no_col)
+                    if cell and cell.font and cell.font.strike:
+                        continue
+                except Exception:
+                    pass
 
                 # Validate part number
                 cleaned_pn = clean_part_number(pn_str)

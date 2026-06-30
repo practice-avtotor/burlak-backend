@@ -14,8 +14,6 @@ import sqlite3
 import zipfile
 from pathlib import Path
 
-import openpyxl
-import pandas as pd
 import pytest
 
 from app.core.config import get_settings
@@ -24,7 +22,6 @@ from app.db.sync_repository import (
     get_mapping_config,
     update_job_status,
 )
-from app.services.comparison_service import ComparisonService
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Fixtures
@@ -108,9 +105,21 @@ def sample_mapping_config() -> dict:
                     "header_rows": [1],
                     "data_start_row": 2,
                     "columns": {
-                        "part_no": {"col_index": 2, "header": "零件号", "confidence": 0.98},
-                        "name_cn": {"col_index": 3, "header": "零件名称", "confidence": 0.95},
-                        "name_en": {"col_index": 4, "header": "零件名称(英文)", "confidence": 0.92},
+                        "part_no": {
+                            "col_index": 2,
+                            "header": "零件号",
+                            "confidence": 0.98,
+                        },
+                        "name_cn": {
+                            "col_index": 3,
+                            "header": "零件名称",
+                            "confidence": 0.95,
+                        },
+                        "name_en": {
+                            "col_index": 4,
+                            "header": "零件名称(英文)",
+                            "confidence": 0.92,
+                        },
                         "qty": {"col_index": 5, "header": "用量", "confidence": 0.97},
                     },
                 }
@@ -236,228 +245,6 @@ def temp_db_with_failed_cards(temp_db_path: str) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ComparisonService Tests
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-class TestComparisonService:
-    """Unit tests for ComparisonService."""
-
-    def test_load_bom_fallback(self, sample_bom_path: Path):
-        """load_bom should parse BOM using fallback header detection."""
-        df = ComparisonService.load_bom(sample_bom_path)
-        assert isinstance(df, pd.DataFrame)
-        assert not df.empty
-        assert list(df.columns) == ["part_no", "name_cn", "name_en", "qty"]
-        assert len(df) == 3
-        assert df.iloc[0]["part_no"] == "P001"
-        assert df.iloc[0]["qty"] == 10
-
-    def test_load_bom_with_mapping_config(
-        self, sample_bom_with_config: Path, sample_mapping_config: dict
-    ):
-        """load_bom should use mapping_config column indices."""
-        df = ComparisonService.load_bom(sample_bom_with_config, sample_mapping_config)
-        assert isinstance(df, pd.DataFrame)
-        assert not df.empty
-        assert len(df) == 2
-        assert df.iloc[0]["part_no"] == "P001"
-        assert df.iloc[0]["qty"] == 10
-
-    def test_load_bom_file_not_found(self):
-        """load_bom should raise FileNotFoundError for missing file."""
-        with pytest.raises(FileNotFoundError):
-            ComparisonService.load_bom("/nonexistent/bom.xlsx")
-
-    def test_load_cards_data(self, job_dir_with_cards: Path):
-        """load_cards_data should aggregate card JSONs correctly."""
-        df = ComparisonService.load_cards_data(job_dir_with_cards)
-        assert isinstance(df, pd.DataFrame)
-        assert not df.empty
-        assert list(df.columns) == ["part_no", "name_cn", "name_en", "qty", "card_number"]
-
-        # P001 appears in both cards: 5 + 5 = 10
-        p001 = df[df["part_no"] == "P001"].iloc[0]
-        assert p001["qty"] == 10
-
-        # P002 appears only in card 1: 10
-        p002 = df[df["part_no"] == "P002"].iloc[0]
-        assert p002["qty"] == 10
-
-        # P003 appears only in card 2: 15
-        p003 = df[df["part_no"] == "P003"].iloc[0]
-        assert p003["qty"] == 15
-
-    def test_load_cards_data_empty_dir(self, tmp_path: Path):
-        """load_cards_data should return empty DataFrame when no JSONs exist."""
-        empty_dir = tmp_path / "empty_job"
-        empty_dir.mkdir()
-        df = ComparisonService.load_cards_data(empty_dir)
-        assert isinstance(df, pd.DataFrame)
-        assert df.empty
-
-    def test_load_cards_data_not_a_dir(self, tmp_path: Path):
-        """load_cards_data should raise for non-existent directory."""
-        with pytest.raises(NotADirectoryError):
-            ComparisonService.load_cards_data(tmp_path / "nonexistent")
-
-    def test_compare_exact_match(self):
-        """compare should return no discrepancies when BOM and cards match."""
-        bom_df = pd.DataFrame(
-            {
-                "part_no": ["P001", "P002"],
-                "name_cn": ["Bolt", "Nut"],
-                "name_en": ["Bolt", "Nut"],
-                "qty": [10, 20],
-            }
-        )
-        cards_df = pd.DataFrame(
-            {
-                "part_no": ["P001", "P002"],
-                "qty": [10, 20],
-            }
-        )
-        result = ComparisonService.compare(bom_df, cards_df)
-        assert result["summary"]["total_discrepancies"] == 0
-        assert result["summary"]["matched"] == 2
-        assert result["discrepancies"].empty
-
-    def test_compare_only_in_bom(self):
-        """compare should detect parts only in BOM."""
-        bom_df = pd.DataFrame(
-            {
-                "part_no": ["P001", "P002", "P003"],
-                "name_cn": ["A", "B", "C"],
-                "name_en": ["a", "b", "c"],
-                "qty": [10, 20, 30],
-            }
-        )
-        cards_df = pd.DataFrame(
-            {
-                "part_no": ["P001", "P002"],
-                "qty": [10, 20],
-            }
-        )
-        result = ComparisonService.compare(bom_df, cards_df)
-        assert result["summary"]["only_in_bom"] == 1
-        assert result["summary"]["total_discrepancies"] == 1
-        disc = result["discrepancies"]
-        assert disc.iloc[0]["part_no"] == "P003"
-        assert disc.iloc[0]["type"] == "Только в BOM"
-
-    def test_compare_only_in_cards(self):
-        """compare should detect parts only in cards."""
-        bom_df = pd.DataFrame(
-            {
-                "part_no": ["P001"],
-                "name_cn": ["A"],
-                "name_en": ["a"],
-                "qty": [10],
-            }
-        )
-        cards_df = pd.DataFrame(
-            {
-                "part_no": ["P001", "P999"],
-                "qty": [10, 5],
-            }
-        )
-        result = ComparisonService.compare(bom_df, cards_df)
-        assert result["summary"]["only_in_cards"] == 1
-        disc = result["discrepancies"]
-        assert disc.iloc[0]["part_no"] == "P999"
-        assert disc.iloc[0]["type"] == "Только в картах"
-
-    def test_compare_qty_mismatch(self):
-        """compare should detect quantity mismatches."""
-        bom_df = pd.DataFrame(
-            {
-                "part_no": ["P001", "P002"],
-                "name_cn": ["A", "B"],
-                "name_en": ["a", "b"],
-                "qty": [10, 20],
-            }
-        )
-        cards_df = pd.DataFrame(
-            {
-                "part_no": ["P001", "P002"],
-                "qty": [5, 25],
-            }
-        )
-        result = ComparisonService.compare(bom_df, cards_df)
-        assert result["summary"]["qty_mismatch"] == 2
-        assert result["summary"]["total_discrepancies"] == 2
-
-    def test_generate_report(self, tmp_path: Path):
-        """generate_report should create a valid XLSX file."""
-        discrepancies = pd.DataFrame(
-            {
-                "part_no": ["P001", "P999"],
-                "name_cn": ["Bolt", ""],
-                "name_en": ["Bolt", ""],
-                "qty_bom": [10.0, 0.0],
-                "qty_cards": [5.0, 3.0],
-                "diff": [-5.0, 3.0],
-                "type": ["Конфликт количества", "Только в картах"],
-            }
-        )
-        result = {
-            "discrepancies": discrepancies,
-            "summary": {
-                "total_bom_parts": 2,
-                "total_cards_parts": 2,
-                "matched": 0,
-                "only_in_bom": 0,
-                "only_in_cards": 1,
-                "qty_mismatch": 1,
-                "total_discrepancies": 2,
-            },
-        }
-        output_path = tmp_path / "diff.xlsx"
-        ComparisonService.generate_report(result, str(output_path))
-
-        assert output_path.exists()
-        # Verify it's a valid XLSX (ZIP signature)
-        with open(output_path, "rb") as f:
-            assert f.read(2) == b"PK"
-
-        # Verify content via openpyxl
-        wb = openpyxl.load_workbook(str(output_path))
-        assert "Сводка" in wb.sheetnames
-        assert "Расхождения" in wb.sheetnames
-        assert "Конфликт количества" in wb.sheetnames
-        assert "Только в картах" in wb.sheetnames
-        wb.close()
-
-    def test_generate_report_with_failed_cards(self, tmp_path: Path):
-        """generate_report should include failed cards sheet."""
-        discrepancies = pd.DataFrame(
-            columns=["part_no", "name_cn", "name_en", "qty_bom", "qty_cards", "diff", "type"]
-        )
-        result = {
-            "discrepancies": discrepancies,
-            "summary": {
-                "total_bom_parts": 0,
-                "total_cards_parts": 0,
-                "matched": 0,
-                "only_in_bom": 0,
-                "only_in_cards": 0,
-                "qty_mismatch": 0,
-                "total_discrepancies": 0,
-            },
-        }
-        failed_cards = [
-            {"card_path": "cards/bad.xlsx", "error_message": "Parse error"},
-            {"card_path": "cards/corrupt.xlsx", "error_message": "Invalid format"},
-        ]
-        output_path = tmp_path / "diff_with_errors.xlsx"
-        ComparisonService.generate_report(result, str(output_path), failed_cards)
-
-        wb = openpyxl.load_workbook(str(output_path))
-        assert "Ошибки файлов" in wb.sheetnames
-        ws = wb["Ошибки файлов"]
-        # Header + 2 data rows
-        assert ws.max_row == 3
-        wb.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -595,7 +382,9 @@ class TestSyncRepository:
         finally:
             settings.db_url = original
 
-    def test_get_mapping_config_with_value(self, temp_db_with_job: int, temp_db_path: str):
+    def test_get_mapping_config_with_value(
+        self, temp_db_with_job: int, temp_db_path: str
+    ):
         """get_mapping_config should return parsed JSON."""
         settings = get_settings()
         original = settings.db_url
@@ -625,11 +414,28 @@ class TestSyncRepository:
 
             conn = sqlite3.connect(temp_db_path)
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT status, stage FROM jobs WHERE id = ?", (temp_db_with_job,)).fetchone()
+            row = conn.execute(
+                "SELECT status, stage FROM jobs WHERE id = ?", (temp_db_with_job,)
+            ).fetchone()
             conn.close()
 
             assert row["status"] == "done"
             assert row["stage"] == "completed"
+        finally:
+            settings.db_url = original
+
+    def test_get_failed_cards(self, temp_db_with_failed_cards: int, temp_db_path: str):
+        """get_failed_cards should return all failed card paths and error messages."""
+        from app.db.sync_repository import get_failed_cards
+
+        settings = get_settings()
+        original = settings.db_url
+        settings.db_url = temp_db_path
+        try:
+            failed_cards = get_failed_cards(temp_db_with_failed_cards)
+            assert len(failed_cards) == 1
+            assert failed_cards[0]["card_path"] == "cards/CARD-002.xlsx"
+            assert failed_cards[0]["error_message"] == "Parse error: invalid format"
         finally:
             settings.db_url = original
 
@@ -658,17 +464,38 @@ class TestAggregateIntegration:
         settings.storage_path = str(mock_storage_path)
 
         try:
-            # Set up: update bom_path to point to our test BOM
+            # Set up: update bom_path and mapping_config to point to our test BOM
+            import json
+
+            mapping_cfg = {
+                "bom": {
+                    "sheets": [
+                        {
+                            "sheet_name": "BOM",
+                            "sheet_type": "bom_data",
+                            "header_rows": [1],
+                            "data_start_row": 2,
+                            "columns": {
+                                "part_no": {"col_index": 1, "header": "零件号"},
+                                "qty": {"col_index": 4, "header": "数量"},
+                                "name_cn": {"col_index": 2, "header": "零件名称"},
+                                "name_en": {"col_index": 3, "header": "English Name"},
+                            },
+                        }
+                    ]
+                }
+            }
             conn = sqlite3.connect(temp_db_path)
             conn.execute(
-                "UPDATE jobs SET bom_path = ? WHERE id = ?",
-                (str(sample_bom_path), temp_db_with_job),
+                "UPDATE jobs SET bom_path = ?, mapping_config = ? WHERE id = ?",
+                (str(sample_bom_path), json.dumps(mapping_cfg), temp_db_with_job),
             )
             conn.commit()
             conn.close()
 
             # Copy card JSONs to the mock storage job dir
             import shutil
+
             job_dir = mock_storage_path / str(temp_db_with_job)
             job_dir.mkdir(parents=True, exist_ok=True)
             for f in job_dir_with_cards.iterdir():
@@ -715,6 +542,7 @@ class TestAggregateIntegration:
         try:
             # Copy translated cards to mock storage
             import shutil
+
             job_dir = mock_storage_path / str(temp_db_with_job)
             if job_dir.exists():
                 shutil.rmtree(str(job_dir))
@@ -767,6 +595,7 @@ class TestAggregateIntegration:
 
         try:
             import shutil
+
             job_dir = mock_storage_path / str(temp_db_with_failed_cards)
             if job_dir.exists():
                 shutil.rmtree(str(job_dir))

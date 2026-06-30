@@ -1,15 +1,15 @@
-"""Модуль генерации выходных артефактов.
+"""Output artefact generation module.
 
-По итогам работы система отдаёт:
-  1. Excel-файл «discrepancies.xlsx» — 5 листов Enterprise-уровня:
-     - «Сводка»: общая статистика + таблица по комплектациям.
-     - «Расхождения»: детальный список всех несоответствий с автофильтром.
-     - «Неточное совпадение номеров»: fuzzy matches.
-     - «Все детали BOM»: полный перечень деталей спецификации.
-     - «Ошибки файлов»: повреждённые файлы (если есть).
-  2. ZIP-архив с разделёнными .xlsx файлами операционных карт.
+On completion the system outputs:
+  1. Excel file «discrepancies.xlsx» — 5 enterprise-level sheets:
+     - Summary: overall statistics + per-configuration table.
+     - Discrepancies: detailed list of all mismatches with autofilter.
+     - Fuzzy matches: approximate part-number matches.
+     - All BOM parts: complete specification inventory.
+     - File errors: corrupted files (if any).
+  2. ZIP archive with split operational card .xlsx files.
 
-Класс Reporter — обёртка для использования в FastAPI/серверной архитектуре.
+Reporter class — wrapper for FastAPI / server architecture use.
 """
 
 from __future__ import annotations
@@ -20,17 +20,16 @@ import zipfile
 
 import xlsxwriter
 
-from burlak_parser.bom_parser import BOMData
-from burlak_parser.card_parser import CardsData
-from burlak_parser.comparator import (
+from app.services.bom_parser_service import BOMData, CardsData
+from app.services.comparator_service import (
     DiscrepancyType,
     MultiConfigComparisonResult,
 )
 
 logger = logging.getLogger(__name__)
 
-# Без лимита — показываем ВСЕ комплектации в матрице
-# (T1L BOM: 78, может быть больше)
+# No limit — show ALL configurations in the matrix
+# (multi-config BOM: 78, may be more)
 
 
 def generate_discrepancy_report(
@@ -39,18 +38,18 @@ def generate_discrepancy_report(
     bom: BOMData | None = None,
     cards_data: CardsData | None = None,
 ) -> str:
-    """Сгенерировать Excel-отчёт Enterprise-уровня для ВСЕХ комплектаций.
+    """Generate enterprise-level Excel report for ALL configurations.
 
-    Структура:
-      1. Сводка — общая статистика и таблица по комплектациям.
-      2. Расхождения — полный список с автофильтром и цветовой индикацией.
-      3. Неточное совпадение номеров — fuzzy matches.
-      4. Все детали BOM — полный перечень деталей.
-      5. Ошибки файлов — повреждённые файлы (если есть).
+    Structure:
+      1. Summary: overall statistics + per-configuration table.
+      2. Discrepancies: full list with autofilter and colour coding.
+      3. Fuzzy matches: approximate part-number matches.
+      4. All BOM parts: complete BOM inventory.
+      5. File errors: corrupted files (if any).
     """
     workbook = xlsxwriter.Workbook(output_path)
 
-    # ── Общие форматы ──
+    # ── Common formats ──
     header_fmt = workbook.add_format(
         {
             "bold": True,
@@ -63,20 +62,20 @@ def generate_discrepancy_report(
             "font_size": 11,
         }
     )
-    title_fmt = workbook.add_format(
+    workbook.add_format(
         {
             "bold": True,
             "font_size": 14,
             "font_color": "#1F3864",
         }
     )
-    label_fmt = workbook.add_format(
+    workbook.add_format(
         {
             "bold": True,
             "font_size": 11,
         }
     )
-    value_fmt = workbook.add_format(
+    workbook.add_format(
         {
             "font_size": 11,
         }
@@ -107,7 +106,7 @@ def generate_discrepancy_report(
             "font_size": 10,
         }
     )
-    # Цветовые форматы по типам несоответствий
+    # Colour formats by discrepancy type
     qty_mismatch_fmt = workbook.add_format(
         {
             "border": 1,
@@ -146,13 +145,13 @@ def generate_discrepancy_report(
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Лист 1: СВОДКА — профессиональный дашборд
+    # Sheet 1: SUMMARY — professional dashboard
     # ══════════════════════════════════════════════════════════════════════════
     ws_summary = workbook.add_worksheet("Сводка")
     ws_summary.set_tab_color("#1F3864")
     ws_summary.hide_gridlines(2)
 
-    # Заголовок-шапка
+    # Header banner
     title_fmt_big = workbook.add_format(
         {
             "bold": True,
@@ -170,7 +169,7 @@ def generate_discrepancy_report(
             "valign": "vcenter",
         }
     )
-    # Карточки с метриками
+    # Metric cards
     card_title_fmt = workbook.add_format(
         {
             "bold": True,
@@ -204,11 +203,11 @@ def generate_discrepancy_report(
         }
     )
 
-    # Ширины колонок для дашборда
+    # Column widths for dashboard
     for c in range(8):
         ws_summary.set_column(c, c, 22)
 
-    # Заголовок
+    # Title
     ws_summary.merge_range(
         "A1:H1", "ОТЧЁТ СВЕРКИ BOM И ОПЕРАЦИОННЫХ КАРТ", title_fmt_big
     )
@@ -220,7 +219,7 @@ def generate_discrepancy_report(
     )
     ws_summary.set_row(1, 18)
 
-    # Карточки метрик (строка 3-5)
+    # Metric cards (rows 3-5)
     total = len(result.all_discrepancies)
     total_qty_mismatch = sum(
         1
@@ -238,7 +237,7 @@ def generate_discrepancy_report(
         if d.discrepancy_type == DiscrepancyType.ONLY_IN_CARDS
     )
 
-    # Карточка 1: Всего несоответствий
+    # Card 1: Total discrepancies
     ws_summary.merge_range("A3:B3", "ВСЕГО НЕСООТВЕТСТВИЙ", card_title_fmt)
     ws_summary.merge_range("A4:B4", str(total), card_value_fmt)
     ws_summary.merge_range("A5:B5", "по всем комплектациям", card_sub_fmt)
@@ -246,7 +245,7 @@ def generate_discrepancy_report(
     ws_summary.set_row(3, 40)
     ws_summary.set_row(4, 16)
 
-    # Карточка 2: Разное количество
+    # Card 2: Quantity mismatches
     qty_color = "#C00000" if total_qty_mismatch > 0 else "#548235"
     card_title_qty = workbook.add_format(
         {
@@ -284,17 +283,17 @@ def generate_discrepancy_report(
     ws_summary.merge_range("C4:D4", str(total_qty_mismatch), card_value_qty)
     ws_summary.merge_range("C5:D5", "конфликтов количества", card_sub_qty)
 
-    # Карточка 3: Есть в BOM, нет в картах
+    # Card 3: Only in BOM
     ws_summary.merge_range("E3:F3", "В BOM, НЕТ В КАРТАХ", card_title_fmt)
     ws_summary.merge_range("E4:F4", str(total_bom_only), card_value_fmt)
     ws_summary.merge_range("E5:F5", "отсутствуют в картах", card_sub_fmt)
 
-    # Карточка 4: Есть в картах, нет в BOM
+    # Card 4: Only in cards
     ws_summary.merge_range("G3:H3", "В КАРТАХ, НЕТ В BOM", card_title_fmt)
     ws_summary.merge_range("G4:H4", str(total_cards_only), card_value_fmt)
     ws_summary.merge_range("G5:H5", "отсутствуют в BOM", card_sub_fmt)
 
-    # Строка с информацией о файлах
+    # File info row
     info_row = 6
     if cards_data:
         corrupted_count = (
@@ -306,7 +305,7 @@ def generate_discrepancy_report(
         ws_summary.merge_range(info_row, 0, info_row, 7, info_text, subtitle_fmt)
         info_row += 1
 
-    # Таблица по комплектациям
+    # Per-configuration table
     table_title_fmt = workbook.add_format(
         {
             "bold": True,
@@ -336,7 +335,7 @@ def generate_discrepancy_report(
         ws_summary.write(config_header_row, ci, h, header_fmt)
     ws_summary.set_row(config_header_row, 30)
 
-    # Чередование строк
+    # Row alternation
     alt_row_fmt = workbook.add_format(
         {
             "border": 1,
@@ -388,14 +387,14 @@ def generate_discrepancy_report(
             cell_center_fmt,
         )
 
-    # Заморозка и автофильтр
+    # Freeze panes and autofilter
     ws_summary.freeze_panes(config_header_row + 1, 0)
     ws_summary.autofilter(
         config_header_row, 0, config_header_row + len(result.config_results), 7
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Лист 2: РАСХОЖДЕНИЯ (основной)
+    # Sheet 2: DISCREPANCIES (main)
     # ══════════════════════════════════════════════════════════════════════════
     ws = workbook.add_worksheet("Расхождения")
     ws.set_tab_color("#C00000")
@@ -404,7 +403,7 @@ def generate_discrepancy_report(
     disc_headers = [
         "Каталожный номер",
         "Название (кит.)",
-        "Название (англ.)",
+        "Название (рус.)",
         "Комплектация",
         "Кол-во в BOM",
         "Кол-во в картах",
@@ -418,7 +417,7 @@ def generate_discrepancy_report(
         ws.write(0, ci, h, header_fmt)
     ws.set_row(0, 30)
 
-    # Автофильтр на весь диапазон
+    # Autofilter on full range
     if result.all_discrepancies:
         ws.autofilter(0, 0, len(result.all_discrepancies), 7)
 
@@ -436,7 +435,7 @@ def generate_discrepancy_report(
 
         ws.write(ri, 0, disc.part_number, fmt)
         ws.write(ri, 1, disc.name_cn, fmt)
-        ws.write(ri, 2, disc.name_en, fmt)
+        ws.write(ri, 2, disc.name_ru if disc.name_ru else disc.name_en, fmt)
         ws.write(ri, 3, disc.config_name[:70] if disc.config_name else "", fmt)
         ws.write(ri, 4, disc.qty_bom, cell_num_fmt)
         ws.write(ri, 5, disc.qty_cards, cell_num_fmt)
@@ -444,7 +443,7 @@ def generate_discrepancy_report(
         ws.write(ri, 7, disc.discrepancy_type, fmt)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Лист 3: НЕТОЧНОЕ СОВПАДЕНИЕ НОМЕРОВ
+    # Sheet 3: FUZZY MATCHES
     # ══════════════════════════════════════════════════════════════════════════
     fuzzy_discs = [
         d
@@ -479,7 +478,7 @@ def generate_discrepancy_report(
             )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Лист 4: ВСЕ ДЕТАЛИ BOM
+    # Sheet 4: ALL BOM PARTS
     # ══════════════════════════════════════════════════════════════════════════
     if bom and bom.parts:
         ws_bom = workbook.add_worksheet("Все детали BOM")
@@ -489,7 +488,7 @@ def generate_discrepancy_report(
         bom_headers = ["Каталожный номер", "Название (кит.)", "Название (англ.)"]
         bom_widths = [22, 35, 35]
         if bom.config_names:
-            # Показываем количества по каждой комплектации
+            # Show quantities per configuration
             for cn in bom.config_names:
                 short = cn if len(cn) <= 25 else cn[:22] + "..."
                 bom_headers.append(short)
@@ -504,7 +503,7 @@ def generate_discrepancy_report(
         ws_bom.autofilter(0, 0, len(sorted_parts), len(bom_headers) - 1)
 
         for ri, (pn, part) in enumerate(sorted_parts, 1):
-            # Используем оригинальный формат номера из BOM (с тире и т.д.)
+            # Use original number format from BOM (with dashes, etc.)
             original_no = part.part_number if part.part_number else pn
             ws_bom.write(ri, 0, original_no, cell_fmt)
             ws_bom.write(ri, 1, part.name_cn, cell_fmt)
@@ -514,9 +513,9 @@ def generate_discrepancy_report(
                 ws_bom.write(ri, ci, qty if qty > 0 else "", cell_num_fmt)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Лист 5: ОШИБКИ ФАЙЛОВ / ПОВРЕЖДЁННЫЕ ФАЙЛЫ
+    # Sheet 5: FILE ERRORS / CORRUPTED FILES
     # ══════════════════════════════════════════════════════════════════════════
-    # Объединяем все повреждённые файлы (из парсинга + из разделения)
+    # Merge all corrupted files (from parsing + splitting)
     all_corrupted_detailed: list = []
     if cards_data:
         # Parse-phase errors (detailed)
@@ -560,12 +559,12 @@ def generate_discrepancy_report(
             ws_corrupt.write(ri, 3, entry.get("phase", ""), cell_fmt)
 
     workbook.close()
-    logger.info("Отчёт сохранён: %s", output_path)
+    logger.info("Report saved: %s", output_path)
     return output_path
 
 
 def create_split_cards_archive(split_files_dir: str, output_path: str) -> str:
-    """Создать ZIP-архив с разделёнными операционными картами."""
+    """Create a ZIP archive with split operational cards."""
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, _, files in os.walk(split_files_dir):
             for fn in files:
@@ -578,15 +577,15 @@ def create_split_cards_archive(split_files_dir: str, output_path: str) -> str:
                     arcname = os.path.relpath(file_path, split_files_dir)
                     zf.write(file_path, arcname)
                 except (FileNotFoundError, PermissionError):
-                    logger.debug("Пропуск недоступного файла: %s", fn)
+                    logger.debug("Skipping inaccessible file: %s", fn)
 
     size_kb = os.path.getsize(output_path) / 1024 if os.path.exists(output_path) else 0
-    logger.info("ZIP-архив создан: %s (%.1f KB)", output_path, size_kb)
+    logger.info("ZIP archive created: %s (%.1f KB)", output_path, size_kb)
     return output_path
 
 
 class Reporter:
-    """Сервис генерации отчётов Enterprise-уровня."""
+    """Enterprise-level report generation service."""
 
     def generate(
         self,
@@ -595,21 +594,21 @@ class Reporter:
         bom: BOMData | None = None,
         cards_data: CardsData | None = None,
     ) -> dict[str, str]:
-        """Сгенерировать все отчёты.
+        """Generate all reports.
 
         Returns:
-            Словарь {описание: путь_к_файлу}.
+            Dict {description: file_path}.
         """
         os.makedirs(output_dir, exist_ok=True)
         outputs: dict[str, str] = {}
 
-        # Excel-отчёт
+        # Excel report
         excel_path = os.path.join(output_dir, "discrepancies.xlsx")
         generate_discrepancy_report(result, excel_path, bom=bom, cards_data=cards_data)
         outputs["excel_report"] = excel_path
 
-        # Текстовый отчёт
-        from burlak_parser.comparator import format_discrepancy_report
+        # Text report
+        from app.services.comparator_service import format_discrepancy_report
 
         text = format_discrepancy_report(result)
         txt_path = os.path.join(output_dir, "report.txt")

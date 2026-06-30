@@ -16,8 +16,10 @@ venv
 *.sqlite3
 .git
 .gitignore
+.graphifyignore
 README.md
 tests/
+create_test_fixtures.py
 .DS_Store
 *.xlsx
 *.zip

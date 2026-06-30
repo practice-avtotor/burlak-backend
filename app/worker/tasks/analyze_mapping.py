@@ -30,7 +30,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
         with open(bom_path, "rb") as f:
             bom_data = f.read()
         bom_snapshot = extract_snapshot_from_bytes(
-            bom_data, os.path.basename(bom_path), max_rows=50
+            bom_data, os.path.basename(bom_path), max_rows=300
         )
         bom_snapshot["format_group"] = "BOM_standard"
 
@@ -59,7 +59,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                 try:
                     card_data = zf.read(representative_path)
                     snapshot = extract_snapshot_from_bytes(
-                        card_data, os.path.basename(representative_path), max_rows=50
+                        card_data, os.path.basename(representative_path), max_rows=300
                     )
                     snapshot["format_group"] = group_name
                     card_snapshots.append(snapshot)
@@ -70,20 +70,20 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                     # We still want to try to run ML analysis if possible with other cards
 
         # 5. Invoke ML Service to get mapping config
-        ml_client = StructureAdapter(settings.ml_service_url)
         logger.info(f"Invoking ML analyze-structure endpoint for job {job_id}")
 
         payload = {
             "bom": [bom_snapshot],
             "sample_cards": card_snapshots,
             "options": {
-                "max_sample_rows": 50,
+                "max_sample_rows": 300,
                 "total_cards_in_archive": len(card_paths),
             },
         }
-        response = ml_client.analyze_structure(payload)
+        with StructureAdapter(settings.ml_service_url) as ml_client:
+            response = ml_client.analyze_structure(payload)
 
-        mapping_config = response
+        mapping_config = response.get("mapping_config", response)
         if (
             not mapping_config
             or "bom" not in mapping_config

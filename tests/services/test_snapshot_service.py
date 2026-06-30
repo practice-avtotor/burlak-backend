@@ -91,9 +91,9 @@ class TestExtractSnapshotFromBytes:
         result = extract_snapshot_from_bytes(data, "big.xlsx", max_rows=10)
         assert len(result["sheets"][0]["rows"]) == 10
 
-    def test_column_cap_at_50(self):
-        """Columns are capped at 50 even if sheet has more."""
-        wide_row = [f"Col{i}" for i in range(80)]
+    def test_column_cap_at_200(self):
+        """Columns are capped at 200 even if sheet has more."""
+        wide_row = [f"Col{i}" for i in range(250)]
         wb = Workbook()
         ws = wb.active
         for c_idx, val in enumerate(wide_row, 1):
@@ -105,7 +105,7 @@ class TestExtractSnapshotFromBytes:
 
         result = extract_snapshot_from_bytes(data, "wide.xlsx")
         sheet = result["sheets"][0]
-        assert sheet["max_column"] == 50
+        assert sheet["max_column"] == 200
 
     def test_empty_workbook(self):
         """Empty workbook with no data."""

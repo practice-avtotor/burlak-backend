@@ -1,20 +1,20 @@
-"""Модуль разделения многолистовых Excel-файлов на отдельные одностраничные файлы.
+"""Module for splitting multi-sheet Excel files into individual single-sheet files.
 
-Использует метод «удаления лишнего» (а не «копирования нужного»):
-  1. Загружает исходный .xlsx как ZIP-архив XML.
-  2. Для каждого листа создаёт копию всего Workbook.
-  3. Удаляет из копии все листы, кроме целевого.
-  4. Очищает глобальные именованные диапазоны (defined names / named ranges),
-     ссылающиеся на удалённые листы — это устраняет ошибку Excel
+Uses the "remove the extra" method (not "copy the needed"):
+  1. Loads the source .xlsx as a ZIP archive of XML.
+  2. Creates a copy of the entire Workbook for each sheet.
+  3. Removes all sheets from the copy except the target.
+  4. Cleans global named ranges (defined names / named ranges),
+     referencing removed sheets — this eliminates the Excel error
      "Removed Feature: Named range from /xl/workbook.xml part (Workbook)".
 
-Преимущества метода:
-  - 100% сохранение форматирования, стилей, картинок, шрифтов.
-  - Сохраняется ширина колонок, высота строк, объединённые ячейки.
-  - Сохраняются изображения, диаграммы, заморозка панелей.
-  - Нет ошибки "Named range" при открытии.
+Method advantages:
+  - 100% preservation of formatting, styles, images, fonts.
+  - Column widths, row heights, and merged cells are preserved.
+  - Images, charts, and frozen panes are preserved.
+  - No "Named range" error on open.
 
-Поддерживает параллелизацию через ProcessPoolExecutor.
+Supports parallelism via ThreadPoolExecutor.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ import re
 import shutil
 import warnings
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from typing import Any
 
 try:
     from lxml import etree as _lxml_etree
@@ -34,9 +36,130 @@ try:
 except ImportError:
     _HAS_LXML = False
 import zipfile
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+class ExcelSheet:
+    """Wrapper over an Excel sheet for a unified openpyxl / xlrd API."""
+
+    def __init__(self, ws: Any, engine: str):
+        self._ws = ws
+        self._engine = engine
+
+    @property
+    def max_row(self) -> int:
+        if self._engine == "openpyxl":
+            return self._ws.max_row or 0
+        else:
+            return self._ws.nrows
+
+    @property
+    def max_column(self) -> int:
+        if self._engine == "openpyxl":
+            return self._ws.max_column or 0
+        else:
+            return self._ws.ncols
+
+    def cell_value(self, row: int, column: int) -> Any:
+        try:
+            if self._engine == "openpyxl":
+                return self._ws.cell(row=row, column=column).value
+            else:
+                val = self._ws.cell_value(row - 1, column - 1)
+                if val == "" or val is None:
+                    return None
+                if isinstance(val, float) and val == int(val):
+                    return int(val)
+                return val
+        except Exception:
+            return None
+
+
+class ExcelReader:
+    """Universal Excel file reader.
+    Supports .xlsx (openpyxl) and .xls (xlrd).
+    Uses openpyxl for .xlsx, xlrd for .xls.
+    """
+
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+        self._wb: Any = None
+        self._engine: str = ""
+        self._sheet_names: list[str] = []
+        self._sheets: dict[str, Any] = {}
+        self._load()
+
+    def _load(self) -> None:
+        ext = os.path.splitext(self.file_path)[1].lower()
+
+        if ext == ".xls":
+            self._load_via_xlrd()
+        else:
+            try:
+                import openpyxl
+
+                wb = openpyxl.load_workbook(
+                    self.file_path,
+                    data_only=True,
+                )
+                self._engine = "openpyxl"
+                self._wb = wb
+                self._sheet_names = list(wb.sheetnames)
+                for sn in self._sheet_names:
+                    self._sheets[sn] = wb[sn]
+                return
+            except Exception:
+                pass
+            # Fallback: read_only mode (handles WPS/slightly corrupted files)
+            try:
+                import openpyxl
+
+                wb = openpyxl.load_workbook(
+                    self.file_path,
+                    data_only=True,
+                    read_only=True,
+                )
+                self._engine = "openpyxl"
+                self._wb = wb
+                self._sheet_names = list(wb.sheetnames)
+                for sn in self._sheet_names:
+                    self._sheets[sn] = wb[sn]
+                return
+            except Exception:
+                pass
+            self._load_via_xlrd()
+
+    def _load_via_xlrd(self) -> None:
+        try:
+            import xlrd
+        except ImportError:
+            raise ImportError(
+                "xlrd is required to read .xls files. Install: pip install xlrd"
+            )
+
+        try:
+            wb = xlrd.open_workbook(self.file_path)
+            self._engine = "xlrd"
+            self._wb = wb
+            self._sheet_names = list(wb.sheet_names())
+            for sn in self._sheet_names:
+                self._sheets[sn] = wb.sheet_by_name(sn)
+        except Exception as e:
+            raise ValueError(f"Failed to open Excel file {self.file_path}: {e}")
+
+    @property
+    def sheet_names(self) -> list[str]:
+        return self._sheet_names
+
+    def get_sheet(self, name: str) -> ExcelSheet:
+        if name not in self._sheets:
+            raise KeyError(f"Sheet '{name}' not found")
+        return ExcelSheet(self._sheets[name], self._engine)
+
+    def close(self) -> None:
+        if self._engine == "openpyxl" and self._wb is not None:
+            self._wb.close()
+
 
 try:
     from openpyxl.utils.cell import get_column_letter, range_boundaries
@@ -73,25 +196,25 @@ except ImportError:
         return (col, int(row_str))
 
 
-# Подавляем предупреждения openpyxl о DrawingML (неполная поддержка)
+# Suppress openpyxl warnings about DrawingML (incomplete support)
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 logger = logging.getLogger(__name__)
 
-# Символы, запрещённые в именах файлов Windows/Linux
+# Characters forbidden in Windows/Linux filenames
 _ILLEGAL_FS_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
-# Декоративные Unicode-символы, которые нужно удалять из имён файлов
-# (звёздочки, ромбы, кружки, стрелки и т.д.)
+# Decorative Unicode characters to strip from filenames
+# (stars, diamonds, circles, arrows, etc.)
 _DECORATIVE_CHARS_RE = re.compile(r'[☆★●○◆◇■□▲△▼▽♠♣♥♦↗→←↑↓«»""' "„]")
 
-# Множественные подчёркивания/точки/пробелы → одинарные
+# Multiple underscores/dots/spaces → single
 _MULTI_SEP_RE = re.compile(r"[_ .]{2,}")
 
-# Регулярка для cell reference: "A3390" → groups ("A", "3390")
+# Regex for cell reference: "A3390" → groups ("A", "3390")
 _CELL_REF_RE = re.compile(r"^([A-Z]+)(\d+)$")
 
-# Пространства имён Excel OOXML
+# Excel OOXML namespaces
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS_CT = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -101,10 +224,10 @@ NS_DRAWINGML = "http://schemas.openxmlformats.org/drawingml/2006/main"
 VML_NS = "urn:schemas-microsoft-com:vml"
 OFFICE_NS = "urn:schemas-microsoft-com:office:office"
 
-# Регистрируем пространства имён глобально
-# Нужно зарегистрировать ВСЕ namespace-ы, которые могут встречаться
-# в OOXML-файлах, чтобы избежать появления ns0:/ns1: префиксов.
-# _serialize_xml() динамически переключает default namespace при каждом вызове.
+# Register namespaces globally
+# Must register ALL namespaces that may appear
+# in OOXML files to avoid ns0:/ns1: prefixes.
+# _serialize_xml() dynamically switches the default namespace on each call.
 ET.register_namespace("", NS_MAIN)
 ET.register_namespace("r", NS_R)
 ET.register_namespace("xdr", NS_DRAWING)
@@ -191,31 +314,41 @@ def _serialize_xml(
                     ET._namespace_map.pop(uri, None)
 
 
-# ─── Типы для вертикального split ───────────────────────────────────
+# ─── Types for vertical split ──────────────────────────────────────
 
 
 @dataclass
 class TableBoundary:
-    """Границы одной таблицы (операции) внутри листа."""
+    """Boundaries of a single table (operation) within a sheet."""
 
-    header_row: int  # Строка заголовка таблицы
-    data_start: int  # Первая строка данных (header_row + 1)
-    data_end: int  # Последняя строка данных
-    operation_name: str = ""  # Название операции
+    header_row: int  # Table header row
+    data_start: int  # First data row (header_row + 1)
+    data_end: int  # Last data row
+    operation_name: str = ""  # Operation name
     source_path: str = ""
     sheet_name: str = ""
     card_label: str = ""
 
 
+@dataclass
+class SplitStatistics:
+    """Sheet splitting statistics."""
+
+    openpyxl_fallback_count: int = 0
+    openpyxl_fallback_files: list[str] = field(default_factory=list)
+    copy_fallback_count: int = 0
+    copy_fallback_files: list[str] = field(default_factory=list)
+
+
 class CardSplitter:
-    """Сервис разделения многолистовых операционных карт на отдельные файлы."""
+    """Service for splitting multi-sheet operational cards into individual files."""
 
     def __init__(self, max_workers: int | None = None):
-        """Инициализировать сплиттер.
+        """Initialise the splitter.
 
         Args:
-            max_workers: Максимальное количество процессов для параллельного разделения.
-                         По умолчанию: количество CPU.
+            max_workers: Maximum number of processes for parallel splitting.
+                         Default: CPU count.
         """
         self.max_workers = max_workers or os.cpu_count() or 4
         self.openpyxl_fallback_count = 0
@@ -231,18 +364,18 @@ class CardSplitter:
         sheet_names: list[str],
         file_label: str = "",
     ) -> list[str]:
-        """Разделить один .xlsx файл на несколько однолистовых файлов.
+        """Split a single .xlsx file into multiple single-sheet files.
 
-        Для .xls файлов (legacy) — копирует как есть без разделения.
+        For .xls files (legacy) — copies as-is without splitting.
 
         Args:
-            source_path: Путь к исходному .xlsx/.xls файлу.
-            output_dir: Директория для сохранения результатов.
-            sheet_names: Имена листов, которые нужно выделить.
-            file_label: Метка файла для именования выходных файлов.
+            source_path: Path to the source .xlsx/.xls file.
+            output_dir: Output directory.
+            sheet_names: Sheet names to extract.
+            file_label: File label for output file naming.
 
         Returns:
-            Список путей к созданным файлам.
+            List of created file paths.
         """
         os.makedirs(output_dir, exist_ok=True)
         created: list[str] = []
@@ -273,13 +406,13 @@ class CardSplitter:
                 os.path.basename(output_path)
             )
             logger.info(
-                "Скопирован .xls файл (без разделения): %s",
+                "Copied .xls file (without splitting): %s",
                 os.path.basename(source_path),
             )
             return created
 
         if ext_lower != ".xlsx":
-            logger.debug("Пропуск не-.xlsx/.xls файла: %s", source_path)
+            logger.debug("Skipping non-.xlsx/.xls file: %s", source_path)
             return created
 
         for sheet_name in sheet_names:
@@ -302,10 +435,10 @@ class CardSplitter:
                 self.manifest.setdefault(original_name, []).append(
                     os.path.basename(output_path)
                 )
-                logger.debug("Создан: %s", os.path.basename(output_path))
+                logger.debug("Created: %s", os.path.basename(output_path))
             except Exception as e:
                 logger.warning(
-                    "Ошибка разделения листа '%s' из %s: %s",
+                    "Error splitting sheet '%s' from %s: %s",
                     sheet_name,
                     os.path.basename(source_path),
                     e,
@@ -317,16 +450,16 @@ class CardSplitter:
         self,
         tasks: list[tuple[str, str, list[str], str]],
     ) -> tuple[list[str], list[tuple[str, str]], int, list[str], dict[str, list[str]]]:
-        """Разделить множество файлов параллельно.
+        """Split multiple files in parallel.
 
-        Гарантирует детерминированный порядок: результаты сортируются
-        по полному пути для воспроизводимости.
+        Guarantees deterministic order: results are sorted
+        by full path for reproducibility.
 
         Args:
-            tasks: Список кортежей (source_path, output_dir, sheet_names, file_label).
+            tasks: List of tuples (source_path, output_dir, sheet_names, file_label).
 
         Returns:
-            Кортеж (all_created_files, errors, openpyxl_fallback_count,
+            Tuple (all_created_files, errors, openpyxl_fallback_count,
                     openpyxl_fallback_files, manifest).
         """
         all_created: list[str] = []
@@ -335,10 +468,10 @@ class CardSplitter:
         all_openpyxl_files: list[str] = []
         merged_manifest: dict[str, list[str]] = {}
 
-        # Предвычисляем все пути детерминированно (синхронно, главный поток)
+        # Pre-compute all paths deterministically (synchronous, main thread)
         path_map = preallocate_split_paths(tasks, tasks[0][1] if tasks else "")
 
-        # Собираем плоские задачи (source_path, output_path, sheet_name)
+        # Collect flat tasks (source_path, output_path, sheet_name)
         sheet_tasks: list[tuple[str, str, str]] = []
         for source_path, out_dir, sheet_names, file_label in tasks:
             for sheet_name in sheet_names:
@@ -346,7 +479,7 @@ class CardSplitter:
                 if output_path:
                     sheet_tasks.append((source_path, output_path, sheet_name))
 
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {}
             for src, out, sheet in sheet_tasks:
                 future = executor.submit(
@@ -377,7 +510,7 @@ class CardSplitter:
                             )
                     else:
                         logger.error(
-                            "Ошибка разделения %s: %s",
+                            "Split error %s: %s",
                             os.path.basename(src),
                             err_msg,
                         )
@@ -385,18 +518,18 @@ class CardSplitter:
                 except Exception as e:
                     err_msg = str(e)
                     logger.error(
-                        "Критическая ошибка параллельного разделения %s: %s",
+                        "Critical error in parallel splitting %s: %s",
                         os.path.basename(src),
                         err_msg,
                     )
                     errors.append((src, err_msg))
 
-        # Сортируем для детерминированного порядка
+        # Sort for deterministic order
         all_created.sort()
         errors.sort(key=lambda x: x[0])
         all_openpyxl_files.sort()
 
-        # Сортируем значения в манифесте
+        # Sort values in the manifest
         for orig in merged_manifest:
             merged_manifest[orig].sort()
 
@@ -414,23 +547,23 @@ class CardSplitter:
         output_path: str,
         keep_sheet_name: str,
     ) -> None:
-        """Выделить один лист из .xlsx файла.
+        """Extract a single sheet from an .xlsx file.
 
-        Стратегия ЛИНЕЙНАЯ (без рекурсии), приоритет производительности:
-          1. ZIP-метод: быстрый (миллисекунды), обрабатывает 90%+ файлов.
-          2. При ошибке ZIP → ОДНА попытка openpyxl (медленный, для WPS/битых).
-          3. При ошибке openpyxl → исключение.
+        LINEAR strategy (no recursion), performance priority:
+          1. ZIP method: fast (milliseconds), handles 90%+ of files.
+          2. On ZIP error → ONE openpyxl attempt (slow, for WPS/corrupted).
+          3. On openpyxl error → exception.
 
         Args:
-            source_path: Путь к исходному .xlsx файлу.
-            output_path: Путь для сохранения нового .xlsx файла.
-            keep_sheet_name: Имя листа, который нужно оставить.
+            source_path: Path to the source .xlsx file.
+            output_path: Path for the new .xlsx file.
+            keep_sheet_name: Name of the sheet to keep.
 
         Raises:
-            ValueError: Если целевой лист не найден в файле.
-            Exception: Если оба метода завершились ошибкой.
+            ValueError: If the target sheet is not found.
+            Exception: If both methods failed.
         """
-        # Попытка 1: ZIP (быстро — миллисекунды на файл)
+        # Attempt 1: ZIP (fast — milliseconds per file)
         try:
             self._extract_sheet_via_zip(source_path, output_path, keep_sheet_name)
             if not _validate_split_file(output_path):
@@ -442,53 +575,54 @@ class CardSplitter:
             return
         except Exception as e:
             logger.warning(
-                "ZIP-метод не смог разделить %s: %s. Пробуем openpyxl...",
+                "ZIP method could not split %s: %s. Trying openpyxl...",
                 os.path.basename(source_path),
                 e,
             )
 
-        # Попытка 2: openpyxl (медленно — для WPS/битых файлов, одна попытка)
+        # Attempt 2: openpyxl (slow — for WPS/corrupted files, one attempt)
         try:
             self._extract_sheet_via_openpyxl(source_path, output_path, keep_sheet_name)
             self.openpyxl_fallback_count += 1
             self.openpyxl_fallback_files.add(os.path.basename(source_path))
             logger.info(
-                "openpyxl успешно разделил лист: %s в файле %s",
+                "openpyxl successfully split sheet: %s in file %s",
                 keep_sheet_name,
                 os.path.basename(source_path),
             )
             return
         except Exception as openpyxl_e:
+            openpyxl_error = openpyxl_e
             logger.warning(
-                "openpyxl не смог разделить лист '%s' из %s: %s. "
-                "Пробуем скопировать исходный файл...",
+                "openpyxl could not split sheet '%s' from %s: %s. "
+                "Trying to copy source file...",
                 keep_sheet_name,
                 os.path.basename(source_path),
                 openpyxl_e,
             )
 
-        # Попытка 3: Копирование исходного файла (последний шанс)
-        # Если файл валидный и открывается, но не поддаётся разделению —
-        # копируем его как есть. Лучше получить неразделённый файл,
-        # чем потерять данные из-за отправки в corrupted_cards.
+        # Attempt 3: Copy source file as-is (last resort)
+        # If the file is valid and opens but cannot be split —
+        # copy it as-is. Better to get an unsplit file
+        # than lose data by sending it to corrupted_cards.
         try:
             _copy_source_as_fallback(source_path, output_path)
             self.copy_fallback_count += 1
             self.copy_fallback_files.add(os.path.basename(source_path))
             logger.info(
-                "Исходный файл скопирован (copy fallback) для листа '%s' из %s "
-                "(возможно несколько листов в выходном файле)",
+                "Source file copied (copy fallback) for sheet '%s' from %s "
+                "(may contain multiple sheets in output file)",
                 keep_sheet_name,
                 os.path.basename(source_path),
             )
             return
         except Exception as copy_e:
             logger.error(
-                "Все три метода разделения листа '%s' из %s завершились ошибкой. "
-                "ZIP: см. выше. openpyxl: %s. Copy: %s",
+                "All three methods of splitting sheet '%s' from %s failed. "
+                "ZIP: see above. openpyxl: %s. Copy: %s",
                 keep_sheet_name,
                 os.path.basename(source_path),
-                openpyxl_e,
+                openpyxl_error,
                 copy_e,
             )
             raise
@@ -499,22 +633,22 @@ class CardSplitter:
         output_path: str,
         keep_sheet_name: str,
     ) -> None:
-        """Выделить один лист через openpyxl (load → remove sheets → save).
+        """Extract one sheet via openpyxl (load → remove sheets → save).
 
-        Этот метод корректно обрабатывает файлы, созданные WPS Office
-        и другими генераторами OOXML, которые могут содержать
-        нестандартные CRC-суммы или повреждённые записи ZIP.
+        This method correctly handles files created by WPS Office
+        and other OOXML generators that may contain
+        non-standard CRC checksums or corrupted ZIP entries.
 
-        Включает обход бага WPS: DefinedNameDict без атрибута definedName.
+        Includes workaround for WPS bug: DefinedNameDict without definedName attribute.
 
         Args:
-            source_path: Путь к исходному .xlsx файлу.
-            output_path: Путь для сохранения нового .xlsx файла.
-            keep_sheet_name: Имя листа, который нужно оставить.
+            source_path: Path to the source .xlsx file.
+            output_path: Path for the new .xlsx file.
+            keep_sheet_name: Name of the sheet to keep.
 
         Raises:
-            ValueError: Если целевой лист не найден.
-            Exception: При ошибке загрузки/сохранения openpyxl.
+            ValueError: If the target sheet is not found.
+            Exception: On openpyxl load/save error.
         """
         import openpyxl
 
@@ -525,7 +659,7 @@ class CardSplitter:
 
         if keep_sheet_name not in sheet_names:
             wb.close()
-            raise ValueError(f"Лист '{keep_sheet_name}' не найден в файле")
+            raise ValueError(f"Sheet '{keep_sheet_name}' not found in file")
 
         if len(sheet_names) <= 1:
             wb.save(output_path)
@@ -534,11 +668,11 @@ class CardSplitter:
 
         sheets_to_remove = [n for n in sheet_names if n != keep_sheet_name]
 
-        # ── WPS BUG FIX: Патчим DefinedNameDict перед удалением листов ──
-        # WPS Office создаёт повреждённые OOXML, где wb.defined_names
-        # не имеет атрибута definedName. openpyxl падает при del wb[sheet]
-        # с AttributeError: 'DefinedNameDict' object has no attribute 'definedName'.
-        # Решение: принудительно создаём пустые атрибуты.
+        # ── WPS BUG FIX: Patch DefinedNameDict before sheet removal ──
+        # WPS Office produces corrupted OOXML where wb.defined_names
+        # lacks the definedName attribute. openpyxl crashes on del wb[sheet]
+        # with AttributeError: 'DefinedNameDict' object has no attribute 'definedName'.
+        # Solution: forcefully create empty attributes.
         dn = getattr(wb, "defined_names", None)
         if dn is not None:
             if not hasattr(dn, "definedName"):
@@ -546,7 +680,7 @@ class CardSplitter:
             if not hasattr(dn, "elements"):
                 dn.elements = []
 
-        # Удаляем named ranges, ссылающиеся на удаляемые листы
+        # Remove named ranges referencing removed sheets
         try:
             if dn is not None and dn.definedName:
                 to_delete = []
@@ -583,41 +717,41 @@ class CardSplitter:
         output_path: str,
         keep_sheet_name: str,
     ) -> None:
-        """Выделить один лист через чистую ZIP-манипуляцию.
+        """Extract one sheet via pure ZIP manipulation.
 
-        АЛГОРИТМ (КЛЮЧЕВОЙ):
-        Стратегия «сохраняем только нужное»:
-          1. Читаем оригинальный ZIP в память.
-          2. Находим rId и путь к сохранённому листу.
-          3. Рекурсивно трассируем все .rels от листа → находим все нужные файлы
-             (drawing XML, VML, OLE, изображения, printerSettings, их .rels).
-          4. Добавляем обязательные: workbook, styles, theme, sharedStrings, docProps.
-          5. Создаём НОВЫЙ workbook.xml: только 1 лист + очищенные definedNames.
-             ВАЖНО: все остальные элементы (fileVersion, workbookPr, bookViews,
-             calcPr, AlternateContent) копируются из оригинала AS-IS.
-          6. Создаём НОВЫЙ workbook.xml.rels: только лист + shared items.
-          7. Фильтруем Content_Types.xml: только Override для существующих файлов.
-          8. Записываем новый ZIP.
+        ALGORITHM (KEY):
+        "Keep only what's needed" strategy:
+          1. Read the original ZIP into memory.
+          2. Find the rId and path to the target sheet.
+          3. Recursively trace all .rels from the sheet → find all needed files
+             (drawing XML, VML, OLE, images, printerSettings, their .rels).
+          4. Add mandatory files: workbook, styles, theme, sharedStrings, docProps.
+          5. Create NEW workbook.xml: only 1 sheet + cleaned definedNames.
+             IMPORTANT: all other elements (fileVersion, workbookPr, bookViews,
+             calcPr, AlternateContent) are copied from the original AS-IS.
+          6. Create NEW workbook.xml.rels: only the sheet + shared items.
+          7. Filter Content_Types.xml: only Override for existing files.
+          8. Write the new ZIP.
 
-        ВАЖНО: НИКАКОГО openpyxl, НИКАКОГО переименования файлов!
-        Все оригинальные XML-файлы и бинарные данные копируются AS-IS
-        с их оригинальными именами (sheet8.xml остаётся sheet8.xml).
-        Это гарантирует 100% сохранение всех ссылок внутри drawing,
-        VML, OLE и других файлов.
+        IMPORTANT: NO openpyxl, NO file renaming!
+        All original XML files and binary data are copied AS-IS
+        with their original names (sheet8.xml stays sheet8.xml).
+        This guarantees 100% preservation of all references inside drawing,
+        VML, OLE and other files.
 
         Args:
-            source_path: Путь к исходному .xlsx файлу.
-            output_path: Путь для сохранения нового .xlsx файла.
-            keep_sheet_name: Имя листа, который нужно оставить.
+            source_path: Path to the source .xlsx file.
+            output_path: Path for the new .xlsx file.
+            keep_sheet_name: Name of the sheet to keep.
 
         Raises:
-            ValueError: Если целевой лист не найден в файле.
+            ValueError: If the target sheet is not found.
         """
-        # ── ФАЗА 1: Прочитать оригинальный ZIP ──
-        # Пробуем несколько кодировок для имён файлов в ZIP.
-        # Китайские Windows системы создают ZIP с GBK-кодировкой имён,
-        # но Python zipfile по умолчанию использует CP437, что ломает
-        # пути к файлам (mojibake) и делает невозможным поиск по имени.
+        # ── PHASE 1: Read the original ZIP ──
+        # Try several encodings for filenames in ZIP.
+        # Chinese Windows systems create ZIP with GBK-encoded names,
+        # but Python zipfile defaults to CP437, which breaks
+        # file paths (mojibake) and makes name-based lookup impossible.
         with open(source_path, "rb") as f:
             zip_data = f.read()
 
@@ -639,7 +773,7 @@ class CardSplitter:
         if not _zip_loaded:
             raise ValueError(f"Cannot read source ZIP with any encoding: {source_path}")
 
-        # ── ФАЗА 2: Найти лист в workbook.xml ──
+        # ── PHASE 2: Find the sheet in workbook.xml ──
         wb_xml = orig_entries.get("xl/workbook.xml")
         if wb_xml is None:
             raise ValueError("xl/workbook.xml not found")
@@ -649,7 +783,7 @@ class CardSplitter:
         if sheets_elem is None:
             raise ValueError("<sheets> not found in original workbook.xml")
 
-        # Находим rId сохранённого листа
+        # Find the target sheet rId
         target_r_id: str | None = None
         for sheet_el in sheets_elem.findall(f"{{{NS_MAIN}}}sheet"):
             if sheet_el.get("name") == keep_sheet_name:
@@ -659,7 +793,7 @@ class CardSplitter:
         if target_r_id is None:
             raise ValueError(f"Sheet '{keep_sheet_name}' not found")
 
-        # ── ФАЗА 3a: Найти путь к листу из workbook.xml.rels ──
+        # ── PHASE 3a: Find the sheet path from workbook.xml.rels ──
         rels_xml = orig_entries.get("xl/_rels/workbook.xml.rels")
         if rels_xml is None:
             raise ValueError("xl/_rels/workbook.xml.rels not found")
@@ -674,16 +808,16 @@ class CardSplitter:
         if not orig_sheet_path:
             raise ValueError(f"No target for rId {target_r_id}")
 
-        # Нормализуем путь
+        # Normalize path
         orig_sheet_path = orig_sheet_path.lstrip("/")
         if not orig_sheet_path.startswith("xl/"):
             orig_sheet_path = "xl/" + orig_sheet_path
 
-        # ── ФАЗА 3b: Рекурсивно трассировать все .rels ──
+        # ── PHASE 3b: Recursively trace all .rels ──
         needed: set[str] = set()
 
         def _trace_rels(rels_path: str, base_dir: str) -> None:
-            """Рекурсивно трассировать .rels, добавляя все найденные файлы."""
+            """Recursively trace .rels, adding all found files."""
             if rels_path not in orig_entries:
                 return
             try:
@@ -692,13 +826,13 @@ class CardSplitter:
                     target = tr_el.get("Target", "")
                     if not target:
                         continue
-                    # Ресолвим относительный путь от base_dir
+                    # Resolve relative path from base_dir
                     resolved = os.path.normpath(os.path.join(base_dir, target)).replace(
                         os.sep, "/"
                     )
                     if resolved in orig_entries and resolved not in needed:
                         needed.add(resolved)
-                        # Ищем под-rels (drawing.rels, vml.rels)
+                        # Search for sub-rels (drawing.rels, vml.rels)
                         res_dir = os.path.dirname(resolved)
                         res_base = os.path.basename(resolved)
                         sub_rels = f"{res_dir}/_rels/{res_base}.rels"
@@ -708,16 +842,16 @@ class CardSplitter:
             except Exception as e:
                 logger.warning("Trace rels failed for %s: %s", rels_path, e)
 
-        # Всегда нужны базовые файлы
+        # Always need base files
         needed.add("[Content_Types].xml")
         needed.add("_rels/.rels")
         needed.add("xl/workbook.xml")
         needed.add("xl/_rels/workbook.xml.rels")
 
-        # Сам лист
+        # The sheet itself
         needed.add(orig_sheet_path)
 
-        # .rels файл листа и его рекурсивные зависимости
+        # .rels file of the sheet and its recursive dependencies
         sheet_dir = os.path.dirname(orig_sheet_path)
         sheet_base = os.path.basename(orig_sheet_path)
         sheet_rels_path = f"{sheet_dir}/_rels/{sheet_base}.rels"
@@ -725,17 +859,17 @@ class CardSplitter:
             needed.add(sheet_rels_path)
             _trace_rels(sheet_rels_path, sheet_dir)
 
-        # Добавляем зависимости из workbook.xml.rels.
-        # Оставляем shared items, customXml, datastore, VBA и т.д.,
-        # но исключаем другие листы (worksheet/chartsheet/dialogsheet)
-        # и calcChain (цепь вычислений, невалидна после удаления листов).
+        # Add dependencies from workbook.xml.rels.
+        # Keep shared items, customXml, datastore, VBA, etc.,
+        # but exclude other sheets (worksheet/chartsheet/dialogsheet)
+        # and calcChain (computation chain, invalid after sheet removal).
         for rel_el in rels_root:
             rel_id = rel_el.get("Id", "")
             rel_type = rel_el.get("Type", "").lower()
             rel_target = rel_el.get("Target", "")
             if rel_id == target_r_id:
-                continue  # Пропускаем сам лист (уже добавлен)
-            # Исключаем связи на другие листы и невалидный calcChain
+                continue  # Skip the sheet itself (already added)
+            # Exclude relationships to other sheets and invalid calcChain
             if any(
                 t in rel_type
                 for t in [
@@ -746,7 +880,7 @@ class CardSplitter:
                 ]
             ):
                 continue
-            # Ресолвим путь
+            # Resolve path
             if rel_target.startswith("/"):
                 resolved = rel_target.lstrip("/")
             else:
@@ -755,7 +889,7 @@ class CardSplitter:
                 )
             if resolved in orig_entries:
                 needed.add(resolved)
-                # Трассируем под-связи (например customXml/_rels/item1.xml.rels)
+                # Trace sub-relationships (e.g. customXml/_rels/item1.xml.rels)
                 res_dir = os.path.dirname(resolved)
                 res_base = os.path.basename(resolved)
                 sub_rels = f"{res_dir}/_rels/{res_base}.rels"
@@ -763,25 +897,25 @@ class CardSplitter:
                     needed.add(sub_rels)
                     _trace_rels(sub_rels, res_dir)
 
-        # Добавляем docProps (core, app, custom) — не влияют на загрузку листа
+        # Add docProps (core, app, custom) — do not affect sheet loading
         doc_props = [n for n in orig_entries if n.startswith("docProps/")]
         needed.update(doc_props)
 
-        # Добавляем customXml (если есть)
+        # Add customXml (if present)
         custom_xml = [n for n in orig_entries if n.startswith("customXml/")]
         needed.update(custom_xml)
 
-        # ── ФАЗА 4: Собрать имена удалённых листов ──
+        # ── PHASE 4: Collect names of removed sheets ──
         other_sheet_names: set[str] = set()
         for sheet_el in sheets_elem.findall(f"{{{NS_MAIN}}}sheet"):
             sn = sheet_el.get("name", "")
             if sn != keep_sheet_name:
                 other_sheet_names.add(sn)
 
-        # ── ФАЗА 5: Модифицировать workbook.xml через строковые операции ──
-        # ВАЖНО: используем строковые операции, а НЕ XML парсинг,
-        # чтобы сохранить оригинальные namespace declarations, XML declaration,
-        # line endings и все остальные детали исходного файла AS-IS.
+        # ── PHASE 5: Modify workbook.xml via string operations ──
+        # IMPORTANT: we use string operations, NOT XML parsing,
+        # to preserve the original namespace declarations, XML declaration,
+        # line endings and all other details of the source file AS-IS.
         new_wb_text = _modify_workbook_xml_text(
             orig_entries["xl/workbook.xml"].decode("utf-8"),
             keep_sheet_name,
@@ -789,13 +923,13 @@ class CardSplitter:
             other_sheet_names,
         )
 
-        # ── ФАЗА 6: Модифицировать workbook.xml.rels — удалить лишние Relationship ──
+        # ── PHASE 6: Modify workbook.xml.rels — remove extra Relationships ──
         new_rels_text = _modify_workbook_rels_text(
             orig_entries["xl/_rels/workbook.xml.rels"].decode("utf-8"),
             target_r_id,
         )
 
-        # ── ФАЗА 7: Собрать выходной словарь ──
+        # ── PHASE 7: Build the output dictionary ──
         output_entries: dict[str, bytes] = {}
 
         for name in needed:
@@ -810,7 +944,7 @@ class CardSplitter:
             else:
                 output_entries[name] = orig_entries[name]
 
-        # ── ФАЗА 7b: Очистить .rels файлы от ссылок на удалённые printerSettings ──
+        # ── PHASE 7b: Clean .rels files of references to removed printerSettings ──
         for rels_name in list(output_entries.keys()):
             if rels_name.endswith(".rels") and "printerSettings" not in rels_name:
                 try:
@@ -826,7 +960,7 @@ class CardSplitter:
                 except Exception:
                     pass
 
-        # ── ФАЗА 8: Фильтровать Content_Types.xml — удалить Override для отсутствующих файлов ──
+        # ── PHASE 8: Filter Content_Types.xml — remove Override for missing files ──
         if "[Content_Types].xml" in needed:
             ct_text = orig_entries["[Content_Types].xml"].decode("utf-8")
             new_ct_text = _filter_content_types_text(
@@ -834,21 +968,21 @@ class CardSplitter:
             )
             output_entries["[Content_Types].xml"] = new_ct_text.encode("utf-8")
 
-        # ── ФАЗА 8: Записать новый ZIP с сохранением оригинального сжатия ──
-        # ВАЖНО: MS Excel требует, чтобы изображения (PNG, EMF, JPEG) были
-        # STORED (без сжатия), а XML/DATA файлы — DEFLATED.
-        # Используем оригинальный compression_type если известен.
+        # ── PHASE 8: Write new ZIP preserving original compression ──
+        # IMPORTANT: MS Excel requires images (PNG, EMF, JPEG) to be
+        # STORED (uncompressed), and XML/DATA files — DEFLATED.
+        # Use original compression_type if known.
         if os.path.exists(output_path):
             os.remove(output_path)
 
         def _get_compress_type(name: str) -> int:
-            """Определить метод сжатия: STORED для изображений, DEFLATED для всего остального.
+            """Determine compression: STORED for images, DEFLATED for everything else.
 
-            MS Office хранит изображения в исходном виде (STORED), так как они
-            уже сжаты. XML и другие текстовые данные — DEFLATED.
+            MS Office stores images as-is (STORED) because they
+            are already compressed. XML and other text data — DEFLATED.
             """
             name_lower = name.lower()
-            # Изображения — без сжатия (уже сжаты, DEFLATE не помогает)
+            # Images — no compression (already compressed, DEFLATE does not help)
             if any(
                 name_lower.endswith(ext)
                 for ext in [
@@ -874,6 +1008,7 @@ class CardSplitter:
 
 
 _CT_CACHE: dict[str, str | None] = {}
+_CT_CACHE_MAX_SIZE = 1024
 
 
 def _modify_workbook_xml_text(
@@ -882,21 +1017,21 @@ def _modify_workbook_xml_text(
     target_r_id: str,
     other_sheet_names: set[str],
 ) -> str:
-    """Модифицировать workbook.xml строковыми операциями.
+    """Modify workbook.xml via string operations.
 
-    1. Удалить лишние <sheet> из <sheets>.
-    2. Удалить <definedName>, ссылающиеся на удалённые листы.
+    1. Remove extra <sheet> from <sheets>.
+    2. Remove <definedName> referencing removed sheets.
 
-    ВСЁ остальное сохраняется AS-IS (XML declaration, namespace, line endings).
+    EVERYTHING else is preserved AS-IS (XML declaration, namespace, line endings).
     """
 
-    # ── 1. Замена <sheets> — оставляем только 1 лист ──
+    # ── 1. Replace <sheets> — keep only 1 sheet ──
     def _replace_sheets(m: re.Match) -> str:
-        """Callback для замены содержимого <sheets>."""
+        """Callback to replace <sheets> content."""
         open_tag = m.group(1)
         close_tag = m.group(3)
         content = m.group(2)
-        # Ищем сохранённый лист по name или r:id
+        # Search for the target sheet by name or r:id
         kept = None
         for sh in re.finditer(r"<sheet[^>]*/>", content):
             sh_tag = sh.group(0)
@@ -904,7 +1039,7 @@ def _modify_workbook_xml_text(
             if name_m and name_m.group(1) == keep_sheet_name:
                 kept = sh_tag
                 break
-        # Fallback: по r:id
+        # Fallback: by r:id
         if kept is None:
             for sh in re.finditer(r"<sheet[^>]*/>", content):
                 sh_tag = sh.group(0)
@@ -914,7 +1049,7 @@ def _modify_workbook_xml_text(
                     break
         if kept:
             return f"{open_tag}\n{kept}\n{close_tag}"
-        return m.group(0)  # fallback: без изменений
+        return m.group(0)  # fallback: unchanged
 
     xml_text = re.sub(
         r"(<sheets[^>]*>)(.*?)(</sheets>)",
@@ -924,16 +1059,16 @@ def _modify_workbook_xml_text(
         flags=re.DOTALL,
     )
 
-    # ── 2. Очистка definedNames ──
+    # ── 2. Clean definedNames ──
     def _filter_defined_names(m: re.Match) -> str:
-        """Callback: удалить definedName, ссылающиеся на other_sheet_names."""
+        """Callback: remove definedName referencing other_sheet_names."""
         dn_block = m.group(0)
-        # Находим границы тега
+        # Find tag boundaries
         dn_open_m = re.match(r"(<definedNames[^>]*>)", dn_block)
         if not dn_open_m:
             return dn_block
         dn_open = dn_open_m.group(1)
-        # Находим закрывающий тег
+        # Find closing tag
         close_idx = dn_block.rfind("</definedNames>")
         if close_idx == -1:
             return dn_block
@@ -954,12 +1089,12 @@ def _modify_workbook_xml_text(
                     should_remove = True
                     break
             if not should_remove:
-                # Обновляем localSheetId на 0 (сохранённый лист теперь единственный)
+                # Update localSheetId to 0 (kept sheet is now the only one)
                 dn_xml = re.sub(r'localSheetId="[^"]+"', 'localSheetId="0"', dn_xml)
                 kept_lines.append(dn_xml)
 
         if not kept_lines:
-            # definedNames пуст — удаляем весь блок
+            # definedNames empty — remove the entire block
             return ""
         return dn_open + "".join(kept_lines) + "</definedNames>"
 
@@ -971,7 +1106,7 @@ def _modify_workbook_xml_text(
         flags=re.DOTALL,
     )
 
-    # ── 3. Очистка bookViews/workbookView — сбросить activeTab/firstSheet ──
+    # ── 3. Clean bookViews/workbookView — reset activeTab/firstSheet ──
     def _fix_workbook_view(m: re.Match) -> str:
         tag = m.group(0)
         tag = re.sub(r'activeTab="[^"]*"', 'activeTab="0"', tag)
@@ -982,7 +1117,7 @@ def _modify_workbook_xml_text(
         r"<(?:[\w\-]+:)?workbookView\b[^>]*/>", _fix_workbook_view, xml_text
     )
 
-    # ── 4. Удалить customWorkbookViews ──
+    # ── 4. Remove customWorkbookViews ──
     xml_text = re.sub(
         r"<customWorkbookViews[^>]*>.*?</customWorkbookViews>",
         "",
@@ -997,30 +1132,30 @@ def _modify_workbook_rels_text(
     rels_text: str,
     target_r_id: str,
 ) -> str:
-    """Модифицировать workbook.xml.rels — удалить Relationship для других листов.
+    """Modify workbook.xml.rels — remove Relationships for other sheets.
 
-    Оставляет ТОЛЬКО:
-      - worksheet (сохранённый лист)
+    Leaves ONLY:
+      - worksheet (kept sheet)
       - styles
       - theme
       - sharedStrings
 
-    ВСЁ остальное (XML declaration, форматирование) сохраняется AS-IS.
-    Используется re.sub для удаления отдельных <Relationship .../> строк.
+    EVERYTHING else (XML declaration, formatting) is preserved AS-IS.
+    Uses re.sub to remove individual <Relationship .../> lines.
     """
 
     def _keep_relevant_rels(m: re.Match) -> str:
-        """Callback: вернуть Relationship строку только если она нужна."""
+        """Callback: return Relationship line only if it is needed."""
         rel = m.group(0)
         rid_m = re.search(r'Id="([^"]+)"', rel)
         rtype_m = re.search(r'Type="([^"]+)"', rel)
         rid = rid_m.group(1) if rid_m else ""
         rtype = rtype_m.group(1).lower() if rtype_m else ""
 
-        # Всегда оставляем сохранённый лист
+        # Always keep the target sheet
         if rid == target_r_id:
             return rel
-        # Удаляем связи других листов и невалидный calcChain
+        # Remove other sheet relationships and invalid calcChain
         if any(
             t in rtype
             for t in [
@@ -1031,7 +1166,7 @@ def _modify_workbook_rels_text(
             ]
         ):
             return ""
-        # Остальные связи (styles, theme, sharedStrings, customXml, VBA и др.) сохраняем
+        # Keep remaining relationships (styles, theme, sharedStrings, customXml, VBA, etc.)
         return rel
 
     return re.sub(r"<Relationship[^>]*/>", _keep_relevant_rels, rels_text)
@@ -1041,18 +1176,18 @@ def _filter_content_types_text(
     ct_text: str,
     existing_files: set[str],
 ) -> str:
-    """Фильтровать [Content_Types].xml — удалить Override для несуществующих файлов.
+    """Filter [Content_Types].xml — remove Override for non-existent files.
 
     Args:
-        ct_text: Оригинальный текст [Content_Types].xml.
-        existing_files: Множество путей файлов в выходном ZIP.
+        ct_text: Original text [Content_Types].xml.
+        existing_files: Set of file paths in output ZIP.
 
     Returns:
-        Отфильтрованный XML текст (ВСЁ остальное AS-IS).
+        Filtered XML text (EVERYTHING else AS-IS).
     """
 
     def _filter_override(m: re.Match) -> str:
-        """Callback: вернуть Override только если файл существует."""
+        """Callback: return Override only if file exists."""
         override_line = m.group(0)
         pn_m = re.search(r'PartName="([^"]+)"', override_line)
         if pn_m:
@@ -1062,14 +1197,14 @@ def _filter_content_types_text(
             else:
                 clean_name = part_name
             if clean_name not in existing_files:
-                return ""  # Удаляем
+                return ""  # Remove
         return override_line
 
     return re.sub(r"<Override[^>]*>(?:</Override>)?", _filter_override, ct_text)
 
 
 def _infer_content_type(path: str) -> str | None:
-    """Определить OOXML ContentType по пути файла."""
+    """Determine OOXML ContentType by file path."""
     if path in _CT_CACHE:
         return _CT_CACHE[path]
 
@@ -1102,6 +1237,10 @@ def _infer_content_type(path: str) -> str | None:
     elif path_lower.endswith(".svg"):
         result = "image/svg+xml"
 
+    if len(_CT_CACHE) >= _CT_CACHE_MAX_SIZE:
+        # Evict oldest entries (dict preserves insertion order)
+        while len(_CT_CACHE) >= _CT_CACHE_MAX_SIZE:
+            _CT_CACHE.popitem(last=False)
     _CT_CACHE[path] = result
     return result
 
@@ -1109,78 +1248,50 @@ def _infer_content_type(path: str) -> str | None:
 def _validate_split_file(path: str) -> bool:
     """Verify a split .xlsx file has valid sheet XML and can be opened.
 
-    Использует ValidationPipeline для comprehensive проверки
+    Uses ValidationPipeline for comprehensive verification
     (structural + schema + split-quality levels).
 
     Returns True if the file is valid, False if it should be deleted.
     """
-    try:
-        from burlak_parser.validator import validate_split_file
+    from app.services.validator import validate_split_file
 
-        result = validate_split_file(
-            path,
-            has_images_in_original=True,  # 保守но: предполагаем что были изображения
-        )
-        if not result.is_valid:
-            for issue in result.errors:
-                logger.warning(
-                    "Invalid split file %s: [%s] %s",
-                    os.path.basename(path),
-                    issue.level,
-                    issue.message,
-                )
-        return result.is_valid
-    except ImportError:
-        # Fallback: если validator недоступен, используем простую проверку
-        try:
-            with zipfile.ZipFile(path, "r") as zf:
-                has_sheet = False
-                for name in zf.namelist():
-                    if (
-                        name.endswith(".xml")
-                        and "sheet" in name.lower()
-                        and "_rels" not in name
-                    ):
-                        data = zf.read(name)
-                        root = ET.fromstring(data)
-                        ns = f"{{{NS_MAIN}}}sheetData"
-                        if root.find(ns) is None:
-                            logger.warning(
-                                "Invalid split file %s: missing sheetData in %s",
-                                os.path.basename(path),
-                                name,
-                            )
-                            return False
-                        has_sheet = True
-                        break
-                return has_sheet
-        except (zipfile.BadZipFile, ET.ParseError, OSError) as e:
-            logger.warning("Invalid split file %s: %s", os.path.basename(path), e)
-            return False
+    result = validate_split_file(
+        path,
+        has_images_in_original=True,  # Conservative: assume images were present
+    )
+    if not result.is_valid:
+        for issue in result.errors:
+            logger.warning(
+                "Invalid split file %s: [%s] %s",
+                os.path.basename(path),
+                issue.level,
+                issue.message,
+            )
+    return result.is_valid
 
 
 def _safe_filename(name: str) -> str:
-    """Очистить имя файла, сохранив Unicode-символы.
+    """Clean filename, preserving Unicode characters.
 
-    Удаляет:
-      - Символы, запрещённые в именах файлов ОС: < > : " / \\ | ? *
-      - Управляющие символы (0x00-0x1f)
-      - Декоративные Unicode: ☆ ★ ● ○ ◆ ◇ ■ □ и т.д.
-      - Суррогатные пары (некорректный Unicode)
-      - Множественные подчёркивания/точки/пробелы → одинарные
+    Removes:
+      - Characters forbidden in OS filenames: < > : " / \\ | ? *
+      - Control characters (0x00-0x1f)
+      - Decorative Unicode: ☆ ★ ● ○ ◆ ◇ ■ □ etc.
+      - Surrogate pairs (invalid Unicode)
+      - Multiple underscores/dots/spaces → single
 
-    Сохраняет:
-      - Китайские иероглифы (CJK)
-      - Кириллицу
-      - Латиницу и цифры
+    Preserves:
+      - Chinese characters (CJK)
+      - Cyrillic
+      - Latin and digits
 
     Args:
-        name: Исходное имя файла.
+        name: Original filename.
 
     Returns:
-        Безопасное имя файла с сохранёнными кириллицей/иероглифами.
+        Safe filename with preserved Cyrillic/CJK.
     """
-    # Удаляем суррогатные пары (некорректный Unicode из битых кодировок)
+    # Remove surrogate pairs (invalid Unicode from broken encodings)
     result = name.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
     result = _ILLEGAL_FS_CHARS_RE.sub("_", result)
     result = _DECORATIVE_CHARS_RE.sub("", result)
@@ -1193,20 +1304,20 @@ def _collect_related_files(
     removed_sheet: str,
     files_to_remove: set[str],
 ) -> None:
-    """Собрать все файлы, связанные с удаляемым листом (.rels, drawings, VML, charts).
+    """Collect all files related to the removed sheet (.rels, drawings, VML, charts).
 
     Args:
-        zip_entries: Словарь {имя_в_zip: содержимое}.
-        removed_sheet: Путь к удаляемому листу (напр. 'xl/worksheets/sheet2.xml').
-        files_to_remove: Множество для добавления найденных файлов.
+        zip_entries: Dictionary {zip_name: content}.
+        removed_sheet: Path to the removed sheet (e.g. 'xl/worksheets/sheet2.xml').
+        files_to_remove: Set for adding found files.
     """
-    # .rels файл для листа
+    # .rels file for the sheet
     base = os.path.basename(removed_sheet)
     removed_rels = f"xl/worksheets/_rels/{base}.rels"
     if removed_rels in zip_entries:
         files_to_remove.add(removed_rels)
 
-        # Находим связанные drawings, VML, charts
+        # Find related drawings, VML, charts
         try:
             sr_root = ET.fromstring(zip_entries[removed_rels])
             # OOXML relationship targets resolve relative to the package part
@@ -1215,12 +1326,12 @@ def _collect_related_files(
             sr_dir = os.path.dirname(os.path.dirname(removed_rels))
             for sr_el in sr_root:
                 sr_target = sr_el.get("Target", "")
-                # Резолвим относительный путь (../drawings/drawing1.xml)
+                # Resolve relative path (../drawings/drawing1.xml)
                 resolved = os.path.normpath(os.path.join(sr_dir, sr_target))
                 resolved = resolved.replace(os.sep, "/")
                 files_to_remove.add(resolved)
 
-                # Рекурсивно: .rels для drawing, VML
+                # Recursive: .rels for drawing, VML
                 resolved_base = os.path.basename(resolved)
                 resolved_dir = os.path.dirname(resolved)
                 resolved_rels = f"{resolved_dir}/_rels/{resolved_base}.rels"
@@ -1235,76 +1346,76 @@ def _clean_named_ranges(
     deleted_sheet_names: set[str],
     keep_sheet_name: str,
 ) -> None:
-    """Очистить definedNames (named ranges), ссылающиеся на удалённые листы.
+    """Clean definedNames (named ranges) referencing removed sheets.
 
-    Это КЛЮЧЕВОЙ шаг для устранения ошибки Excel:
+    This is a KEY step to eliminate the Excel error:
     "Removed Feature: Named range from /xl/workbook.xml part (Workbook)"
 
-    Алгоритм:
-      1. Найти элемент <definedNames> в workbook.xml.
-      2. Для каждого <definedName> проверить, ссылается ли он на удалённый лист.
-      3. Ссылка на лист в definedName обычно выглядит как: SheetName!$A$1
-         или заключена в одиночные кавычки если имя с пробелами: 'Sheet Name'!$A$1.
-      4. Удалить все definedNames, ссылающиеся на удалённые листы.
+    Algorithm:
+      1. Find the <definedNames> element in workbook.xml.
+      2. For each <definedName>, check if it references a removed sheet.
+      3. Sheet reference in definedName usually looks like: SheetName!$A$1
+         or is wrapped in single quotes if the name has spaces: 'Sheet Name'!$A$1.
+      4. Remove all definedNames referencing removed sheets.
 
     Args:
-        wb_root: Корневой элемент workbook.xml.
-        deleted_sheet_names: Множество имён удалённых листов.
-        keep_sheet_name: Имя оставленного листа.
+        wb_root: Root element of workbook.xml.
+        deleted_sheet_names: Set of removed sheet names.
+        keep_sheet_name: Name of the kept sheet.
     """
     defined_names_elem = wb_root.find(f"{{{NS_MAIN}}}definedNames")
     if defined_names_elem is None:
-        return  # Нет именованных диапазонов — нечего чистить
+        return  # No named ranges — nothing to clean
 
     names_to_remove: list[ET.Element] = []
 
     for dn in defined_names_elem.findall(f"{{{NS_MAIN}}}definedName"):
-        # Текст definedName — это формула со ссылкой на лист
+        # DefinedName text is a formula with a sheet reference
         formula = (dn.text or "").strip()
         name_attr = dn.get("name", "")
 
-        # Проверяем, ссылается ли definedName на удалённый лист
-        # Шаблоны ссылок:
+        # Check if definedName references a removed sheet
+        # Reference patterns:
         #   'Sheet Name'!$A$1:$B$2
         #   SheetName!$A$1
         #   SheetName!$A$1:$B$2
         should_remove = False
 
         for deleted_name in deleted_sheet_names:
-            # Проверка с кавычками (для имён с пробелами/спецсимволами)
+            # Check with quotes (for names with spaces/special chars)
             if f"'{deleted_name}'!" in formula:
                 should_remove = True
                 break
-            # Проверка без кавычек
+            # Check without quotes
             if formula.startswith(f"{deleted_name}!"):
                 should_remove = True
                 break
-            # Проверка на вхождение (менее точная, но покрывает edge cases)
-            # Ищем паттерн: граница слова + имя листа + !
+            # Check for inclusion (less precise but covers edge cases)
+            # Search for pattern: word boundary + sheet name + !
             if re.search(rf"\b{re.escape(deleted_name)}!", formula):
                 should_remove = True
                 break
 
-        # Также проверяем локальные имена (localSheetId атрибут)
+        # Also check local names (localSheetId attribute)
         if not should_remove:
             local_sheet_id = dn.get("localSheetId")
             if local_sheet_id is not None and local_sheet_id != "0":
-                # После удаления всех остальных листов, оставшийся лист
-                # становится единственным с индексом 0.
-                # Обновляем localSheetId на 0.
+                # After removing all other sheets, the remaining sheet
+                # becomes the only one with index 0.
+                # Update localSheetId to 0.
                 dn.set("localSheetId", "0")
 
         if should_remove:
             names_to_remove.append(dn)
             logger.debug(
-                "Удалён definedName '%s' (ссылка на удалённый лист)",
+                "Removed definedName '%s' (reference to removed sheet)",
                 name_attr,
             )
 
     for dn in names_to_remove:
         defined_names_elem.remove(dn)
 
-    # Если после очистки definedNames пуст — удаляем элемент целиком
+    # If definedNames is empty after cleanup — remove the element entirely
     if len(defined_names_elem) == 0:
         wb_root.remove(defined_names_elem)
 
@@ -1313,40 +1424,40 @@ def preallocate_split_paths(
     tasks: list[tuple[str, str, list[str], str]],
     output_dir: str,
 ) -> dict[tuple[str, str], str]:
-    """Детерминированная предварительная разметка путей для всех листов.
+    """Deterministic pre-allocation of paths for all sheets.
 
-    ВЫПОЛНЯЕТСЯ В ГЛАВНОМ ПОТОКЕ (один поток, детерминированно).
+    EXECUTED IN THE MAIN THREAD (single thread, deterministic).
 
-    Алгоритм:
-      1. Собрать все задачи (источник + лист + метка) в плоский список.
-      2. Отсортировать по (source_path, sheet_name) — детерминированный порядок.
-      3. Для каждой задачи вычислить целевой путь.
-      4. При коллизии имён — разрешить последовательно (_1, _2, ...).
-         Так как список отсортирован, разрешение 100% детерминированно.
-      5. Вернуть словарь {(source_path, sheet_name) -> abs_output_path}.
+    Algorithm:
+      1. Collect all tasks (source + sheet + label) into a flat list.
+      2. Sort by (source_path, sheet_name) — deterministic order.
+      3. Compute the target path for each task.
+      4. On name collision — resolve sequentially (_1, _2, ...).
+         Since the list is sorted, resolution is 100% deterministic.
+      5. Return dict {(source_path, sheet_name) -> abs_output_path}.
 
     Args:
-        tasks: Список кортежей (source_path, output_dir, sheet_names, file_label)
-               — такой же формат, как в split_many_parallel.
-        output_dir: Директория для сохранения результатов.
+        tasks: List of tuples (source_path, output_dir, sheet_names, file_label)
+               — same format as in split_many_parallel.
+        output_dir: Output directory.
 
     Returns:
-        Словарь, отображающий (source_path, sheet_name) в уникальный
-        абсолютный путь выходного файла.
+        Dictionary mapping (source_path, sheet_name) to a unique
+        absolute output file path.
     """
     path_registry: set[str] = set()
     path_map: dict[tuple[str, str], str] = {}
 
-    # 1. Собираем плоский список (source_path, sheet_name, file_label)
+    # 1. Collect flat list (source_path, sheet_name, file_label)
     sheet_tasks: list[tuple[str, str, str]] = []
     for source_path, _out_dir, sheet_names, file_label in tasks:
         for sheet_name in sheet_names:
             sheet_tasks.append((source_path, sheet_name, file_label or ""))
 
-    # 2. Детерминированная сортировка
+    # 2. Deterministic sort
     sheet_tasks.sort(key=lambda t: (t[0], t[1], t[2]))
 
-    # 3-4. Предвычисляем пути с детерминированным разрешением коллизий
+    # 3-4. Pre-compute paths with deterministic collision resolution
     for source_path, sheet_name, file_label in sheet_tasks:
         safe_label = _safe_filename(file_label)[:50] if file_label else ""
         safe_sheet = _safe_filename(sheet_name)[:50]
@@ -1359,7 +1470,7 @@ def preallocate_split_paths(
         base_no_ext = os.path.splitext(output_filename)[0]
         ext = ".xlsx"
 
-        # Детерминированное разрешение коллизий (проверка по set, не по файловой системе)
+        # Deterministic collision resolution (check by set, not filesystem)
         counter = 1
         while output_path in path_registry:
             output_path = os.path.join(output_dir, f"{base_no_ext}_{counter}{ext}")
@@ -1372,21 +1483,23 @@ def preallocate_split_paths(
 
 
 def _verify_xlsx_integrity(file_path: str) -> tuple[bool, str]:
-    """Проверить целостность .xlsx файла (ЛЕНЬЯНАЯ проверка, как Microsoft Excel).
+    """Verify a split .xlsx file (LENIENT check, like Microsoft Excel).
 
-    Файл считается ПОВРЕЖДЁННЫМ (вернёт False) только если openpyxl не может
-    загрузить его даже в read_only режиме — т.е. при фатальных исключениях:
-      - zipfile.BadZipFile (архив не является ZIP)
-      - InvalidFileException (битая OOXML-структура)
+    File is considered CORRUPTED (returns False) only if openpyxl cannot
+    load it even in read_only mode — i.e. on fatal exceptions:
+      - zipfile.BadZipFile (archive is not a ZIP)
+      - InvalidFileException (corrupted OOXML structure)
 
     Args:
-        file_path: Путь к .xlsx файлу.
+        file_path: Path to .xlsx file.
 
     Returns:
-        Кортеж (is_valid: bool, error_message: str).
-        error_message пуст если файл корректен.
+        Tuple (is_valid: bool, error_message: str).
+        error_message empty if file is valid.
     """
     import warnings
+
+    import openpyxl
 
     try:
         with warnings.catch_warnings():
@@ -1415,25 +1528,25 @@ def _copy_source_as_fallback(
     source_path: str,
     output_path: str,
 ) -> None:
-    """Скопировать исходный файл как есть — последний шанс перед corrupted.
+    """Copy source file as-is — last chance before corrupted.
 
-    Используется когда и ZIP-метод, и openpyxl не смогли выделить лист.
-    Проверяет, что исходный файл открывается через openpyxl (lenient check).
-    Если файл валидный — копирует его в выходной путь.
+    Used when both ZIP and openpyxl failed to extract the sheet.
+    Verifies the source file opens via openpyxl (lenient check).
+    If the file is valid — copies it to the output path.
 
-    Это предотвращает попадание в corrupted_cards файлов, которые
-    являются функционально валидными, но не поддаются разделению
-    из-за нестандартной структуры OOXML (WPS Office и т.д.).
+    This prevents files from ending up in corrupted_cards that are
+    functionally valid but cannot be split
+    due to non-standard OOXML structure (WPS Office, etc.).
 
     Args:
-        source_path: Путь к исходному .xlsx файлу.
-        output_path: Путь для сохранения.
+        source_path: Path to the source .xlsx file.
+        output_path: Path for saving.
 
     Raises:
-        ValueError: Если исходный файл не открывается.
+        ValueError: If the source file cannot be opened.
     """
     try:
-        from burlak_parser.validator import validate_split_file_lenient
+        from app.services.validator import validate_split_file_lenient
 
         result = validate_split_file_lenient(source_path)
         if not result.is_valid:
@@ -1451,24 +1564,24 @@ def _extract_to_path_worker(
     output_path: str,
     sheet_name: str,
 ) -> dict[str, Any]:
-    """Рабочая функция: выделить один лист в предварительно размеченный путь.
+    """Worker function: extract one sheet to a pre-allocated path.
 
-    Выполняется в отдельном процессе. НЕ проверяет существование файла —
-    уникальность пути гарантирована главным потоком через preallocate_split_paths.
+    Runs in a separate process. Does NOT check file existence —
+    path uniqueness guaranteed by the main thread via preallocate_split_paths.
 
-    Вызывает _extract_sheet(), который пробует ZIP-метод, затем openpyxl fallback.
-    Если оба метода завершаются ошибкой — файл считается повреждённым.
+    Calls _extract_sheet(), which tries ZIP method, then openpyxl fallback.
+    If both methods fail — file is considered corrupted.
 
     Args:
-        source_path: Путь к исходному .xlsx файлу.
-        output_path: Абсолютный путь для сохранения (уже гарантированно уникальный).
-        sheet_name: Имя листа для выделения.
+        source_path: Path to the source .xlsx file.
+        output_path: Absolute path for saving (already guaranteed unique).
+        sheet_name: Sheet name to extract.
 
     Returns:
-        Словарь с результатами:
-          - "path": output_path при успехе, None при ошибке
-          - "error": сообщение об ошибке или None
-          - "used_fallback": True если использован openpyxl fallback
+        Dictionary with results:
+          - "path": output_path on success, None on error
+          - "error": error message or None
+          - "used_fallback": True if openpyxl fallback used
           - "source_basename": os.path.basename(source_path)
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -1488,8 +1601,8 @@ def _extract_to_path_worker(
             result["used_fallback"] = True
         result["path"] = output_path
     except Exception as e:
-        err_msg = f"Лист '{sheet_name}' из {os.path.basename(source_path)}: {e}"
-        logger.error("Ошибка разделения: %s", err_msg)
+        err_msg = f"Sheet '{sheet_name}' from {os.path.basename(source_path)}: {e}"
+        logger.error("Split error: %s", err_msg)
         result["error"] = err_msg
     return result
 
@@ -1498,20 +1611,19 @@ def _detect_xinyuan_boundaries(
     source_path: str,
     sheet_name: str,
 ) -> list[TableBoundary]:
-    """Обнаружить границы операций по маркеру '鑫源汽车'.
+    """Detect operation boundaries by marker '鑫源汽车'.
 
-    Специальный детектор для SWM мега-файлов (4_G01P作业指导书, G01P后备箱 и т.д.),
-    где каждая операционная карта начинается с '鑫源汽车'.
-    Карты расположены вертикально с фиксированным шагом (36-37 строк).
+    Special detector for mega-files (e.g. 4_G01P作业指导书, G01P后备箱, etc.),
+    where each operational card starts with '鑫源汽车'.
+    Cards are positioned vertically with fixed spacing (36-37 rows).
 
     Args:
-        source_path: Путь к .xlsx файлу.
-        sheet_name: Имя листа.
+        source_path: Path to .xlsx file.
+        sheet_name: Sheet name.
 
     Returns:
-        Список TableBoundary для каждой найденной операции.
+        List of TableBoundary for each found operation.
     """
-    from burlak_parser.card_parser import ExcelReader
 
     boundaries: list[TableBoundary] = []
     reader = ExcelReader(source_path)
@@ -1526,7 +1638,7 @@ def _detect_xinyuan_boundaries(
 
         max_col = min((ws.max_column or 10) + 1, 20)
 
-        # Ищем все строки с '鑫源汽车' в первых 10 колонках
+        # Search for all rows with '鑫源汽车' in the first 10 columns
         marker_rows: list[int] = []
         for r in range(1, max_row + 1):
             for c in range(1, min(max_col, 10)):
@@ -1538,13 +1650,13 @@ def _detect_xinyuan_boundaries(
         if len(marker_rows) < 2:
             return boundaries
 
-        # Вычисляем шаг (медиана интервалов)
+        # Compute step (median of intervals)
         spacings = [
             marker_rows[i + 1] - marker_rows[i] for i in range(len(marker_rows) - 1)
         ]
-        step = sorted(spacings)[len(spacings) // 2]  # медиана
+        step = sorted(spacings)[len(spacings) // 2]  # median
 
-        # Проверяем стабильность шага (>60% интервалов в пределах ±5 от медианы)
+        # Check step stability (>60% of intervals within ±5 of median)
         consistent = sum(1 for s in spacings if abs(s - step) <= 5)
         if consistent < len(spacings) * 0.6:
             logger.debug(
@@ -1555,16 +1667,16 @@ def _detect_xinyuan_boundaries(
             )
             return boundaries
 
-        # Строим границы: каждая '鑫源汽车' — начало новой карты
+        # Build boundaries: each '鑫源汽车' — start of a new card
         for idx, marker_row in enumerate(marker_rows):
-            # Граница данных: от текущего маркера до следующего (или конца файла)
+            # Data boundary: from current marker to next (or end of file)
             if idx + 1 < len(marker_rows):
                 data_end = marker_rows[idx + 1] - 1
             else:
                 data_end = max_row
 
-            # Извлекаем имя операции: ищем CJK текст в строке маркера
-            # (колонки B-J, пропуская колонку A где сам маркер)
+            # Extract operation name: search for CJK text in the marker row
+            # (columns B-J, skipping column A where the marker is)
             op_name = ""
             for c in range(2, min(max_col, 10)):
                 val = ws.cell_value(marker_row, c)
@@ -1608,27 +1720,26 @@ def find_table_boundaries(
     sheet_name: str,
     min_confidence: float = 0.35,
 ) -> list[TableBoundary]:
-    """Обнаружить границы таблиц (операций) внутри одного листа.
+    """Detect table (operation) boundaries within a single sheet.
 
-    Универсальный детектор для любых брендов и структур файлов.
-    Жёсткий лимит max_row <= 500 УДАЛЁН — анализируются все листы.
-    Каждая найденная граница получает confidence score для фильтрации
-    ложных срабатываний (меньше false positives на маленьких файлах).
+    Universal detector for any brand or file structure.
+    Hard limit max_row <= 500 REMOVED — all sheets are analyzed.
+    Each found boundary gets a confidence score for filtering
+    false positives (fewer false positives on small files).
 
-    SWM-формат: таблицы могут не иметь явной qty-колонки (qty_col=0).
-    Для таких случаев confidence score вычисляется без учёта qty.
+    Some formats: tables may lack an explicit qty column (qty_col=0).
+    For such cases, confidence is computed without qty.
 
     Args:
-        source_path: Путь к .xlsx файлу.
-        sheet_name: Имя листа для анализа.
-        min_confidence: Минимальный порог уверенности (0.0-1.0).
-                        Понижен с 0.3 до 0.2 для поддержки SWM-формата.
+        source_path: Path to .xlsx file.
+        sheet_name: Sheet name to analyze.
+        min_confidence: Minimum confidence threshold (0.0-1.0).
+                        Lowered from 0.3 to 0.2 to support wider formats.
 
     Returns:
-        Список TableBoundary с границами каждой таблицы.
+        List of TableBoundary with boundaries of each table.
     """
-    from burlak_parser.card_parser import ExcelReader
-    from burlak_parser.heuristic_analyzer import HeuristicAnalyzer
+    from app.services.heuristic_analyzer import HeuristicAnalyzer
 
     boundaries: list[TableBoundary] = []
 
@@ -1644,10 +1755,10 @@ def find_table_boundaries(
         if max_row < 3:
             return boundaries
 
-        # ── High-priority: SWM '鑫源汽车' marker detection ──
-        # Проверяем FIRST, до HeuristicAnalyzer, потому что
-        # find_part_table находит границы НЕ совпадающие с 鑫源汽车
-        # (смещены на ~20 строк), что приводит к 2 картам в одном файле.
+        # ── High-priority: '鑫源汽车' marker detection ──
+        # Check FIRST, before HeuristicAnalyzer, because
+        # find_part_table finds boundaries NOT matching 鑫源汽车
+        # (offset by ~20 rows), leading to 2 cards in one file.
         xinyuan_first = _detect_xinyuan_boundaries(source_path, sheet_name)
         if xinyuan_first:
             logger.info(
@@ -1673,15 +1784,15 @@ def find_table_boundaries(
             if header_row < start_search:
                 break
 
-            # Определяем operation_name
+            # Determine operation_name
             operation_name = HeuristicAnalyzer.extract_operation_name(ws, header_row)
 
-            # Определяем последнюю строку данных (data_end)
+            # Determine last data row (data_end)
             data_end = _find_table_data_end(ws, header_row, max_row, part_no_col)
 
-            # Confidence scoring: отсеиваем false positives
-            # ВАЖНО: qty_col может быть 0 в SWM-формате — confidence
-            # вычисляется и без qty (с пониженным порогом)
+            # Confidence scoring: filter out false positives
+            # IMPORTANT: qty_col may be 0 in some formats — confidence
+            # is computed without qty (with lower threshold)
             confidence = _compute_boundary_confidence(
                 ws,
                 header_row,
@@ -1719,23 +1830,23 @@ def find_table_boundaries(
     finally:
         reader.close()
 
-    # High-priority fallback: SWM-формат '鑫源汽车' (mega-files с 83+ картами)
+    # High-priority fallback: marker '鑫源汽车' (mega-files with 83+ cards)
     if not boundaries and max_row > 50:
         boundaries = _detect_xinyuan_boundaries(source_path, sheet_name)
 
-    # Fallback: обнаружение таблиц проверки качества (检验项目 pattern)
+    # Fallback: inspection table detection (检验项目 pattern)
     if not boundaries:
         boundaries = _detect_inspection_boundaries(source_path, sheet_name)
 
-    # Fallback: универсальный детектор по повторяющимся шаблонам строк
-    # (для SWM-формата, где find_part_table может пропускать таблицы)
+    # Fallback: universal repeating pattern row detector
+    # (for formats where find_part_table may miss tables)
     if not boundaries and max_row > 100:
         boundaries = _detect_repeating_pattern_boundaries(source_path, sheet_name)
 
-    # Mega-sheet force: если лист очень большой (500+ строк), а найдено
-    # слишком мало границ (менее 5% строк покрыто) — эвристика могла
-    # пропустить большинство таблиц. Принудительно запускаем
-    # универсальный детектор повторяющихся шаблонов.
+    # Mega-sheet force: if sheet is very large (500+ rows), and only
+    # few boundaries found (less than 5% rows covered) — heuristics may have
+    # missed most tables. Force running
+    # universal repeating pattern detector.
     if boundaries and max_row > 200:
         covered_rows = sum(b.data_end - b.header_row for b in boundaries)
         coverage_ratio = covered_rows / max(max_row, 1)
@@ -1747,7 +1858,7 @@ def find_table_boundaries(
                 len(boundaries),
                 coverage_ratio * 100,
             )
-            # Prefer xinyuan detection for SWM files
+            # Prefer marker-based detection for multi-sheet files
             xinyuan_boundaries = _detect_xinyuan_boundaries(
                 source_path,
                 sheet_name,
@@ -1816,24 +1927,24 @@ def _compute_boundary_confidence(
     qty_col: int,
     name_col: int,
 ) -> float:
-    """Вычислить уверенность в границах таблицы (0.0-1.0).
+    """Compute confidence in table boundaries (0.0-1.0).
 
-    Оценка на основе:
-      - Количество ключевых слов в заголовке (до 0.4)
-      - Плотность данных: непустые строки / общие строки (до 0.3)
-      - Количество валидных part-номеров в данных (до 0.3)
+    Score based on:
+      - Keyword count in header (up to 0.4)
+      - Data density: non-empty rows / total rows (up to 0.3)
+      - Valid part number count in data (up to 0.3)
 
-    ВАЖНО: qty_col может быть 0 (SWM-формат) — в этом случае
-    проверка qty пропускается, confidence снижается через более
-    низкий min_confidence порог.
+    IMPORTANT: qty_col may be 0 (some formats) — in this case
+    qty check is skipped, confidence is lowered via a
+    lower min_confidence threshold.
     """
-    from burlak_parser.heuristic_analyzer import (
+    from app.services.heuristic_analyzer import (
         NAME_KEYWORDS,
         PART_NO_KEYWORDS,
         QTY_KEYWORDS,
         HeuristicAnalyzer,
     )
-    from burlak_parser.normalizer import is_valid_part_number
+    from app.services.normalizer import is_valid_part_number
 
     score = 0.0
 
@@ -1892,7 +2003,7 @@ def _compute_boundary_confidence(
     return min(score, 1.0)
 
 
-# Ключевые слова для обнаружения таблиц проверки качества
+# Keywords for detecting inspection tables
 _INSPECTION_HEADER_KW = "检验项目"
 _INSPECTION_SUBHEADER_KW = "作业内容图示"
 
@@ -1901,19 +2012,18 @@ def _detect_inspection_boundaries(
     source_path: str,
     sheet_name: str,
 ) -> list[TableBoundary]:
-    """Обнаружить границы таблиц проверки качества (检验作业指导书).
+    """Detect inspection table boundaries (检验作业指导书).
 
-    Ищет повторяющиеся блоки с заголовком "检验项目" в колонке B.
-    Каждый блок содержит операцию проверки качества.
+    Searches for repeating blocks with header "检验项目" in column B.
+    Each block contains a quality inspection operation.
 
     Args:
-        source_path: Путь к .xlsx файлу.
-        sheet_name: Имя листа.
+        source_path: Path to .xlsx file.
+        sheet_name: Sheet name.
 
     Returns:
-        Список TableBoundary для каждой операции проверки.
+        List of TableBoundary for each inspection operation.
     """
-    from burlak_parser.card_parser import ExcelReader
 
     boundaries: list[TableBoundary] = []
     reader = ExcelReader(source_path)
@@ -1926,7 +2036,7 @@ def _detect_inspection_boundaries(
         if max_row < 3:
             return boundaries
 
-        # Находим все строки с "检验项目" в колонке B (col 2)
+        # Find all rows with "检验项目" in column B (col 2)
         header_rows: list[int] = []
         for r in range(1, max_row + 1):
             val = ws.cell_value(r, 2)
@@ -1936,28 +2046,28 @@ def _detect_inspection_boundaries(
         if len(header_rows) < 2:
             return boundaries
 
-        # Определяем шаг между заголовками (медиана интервалов)
+        # Determine step between headers (median of intervals)
         spacings = [
             header_rows[i + 1] - header_rows[i] for i in range(len(header_rows) - 1)
         ]
         if not spacings:
             return boundaries
-        step = sorted(spacings)[len(spacings) // 2]  # медиана
+        step = sorted(spacings)[len(spacings) // 2]  # median
 
-        # Проверяем что шаг стабилен (>50% интервалов в пределах ±3 от медианы)
+        # Check that step is stable (>50% of intervals within ±3 of median)
         consistent = sum(1 for s in spacings if abs(s - step) <= 3)
         if consistent < len(spacings) * 0.5:
             return boundaries
 
-        # Группируем заголовки: каждый заголовок — отдельная операция,
-        # данные идут до следующего заголовка
+        # Group headers: each header — a separate operation,
+        # data goes until the next header
 
         # Pre-compute title rows for all header rows
         title_rows: list[int] = []
         for header_row in header_rows:
             title_row = header_row
             for tr in range(max(1, header_row - 5), header_row):
-                tr_val = ws.cell_value(tr, 4)  # колонка D
+                tr_val = ws.cell_value(tr, 4)  # column D
                 if tr_val is not None:
                     tr_str = str(tr_val).strip()
                     if "检验" in tr_str or "作业指导" in tr_str or "指导书" in tr_str:
@@ -1967,14 +2077,14 @@ def _detect_inspection_boundaries(
 
         for group_idx, header_row in enumerate(header_rows):
             cur_title = title_rows[group_idx]
-            # data_end: до следующего title_row (не header_row!), чтобы не было overlap
+            # data_end: until next title_row (not header_row!), to avoid overlap
             if group_idx + 1 < len(header_rows):
                 next_title = title_rows[group_idx + 1]
                 data_end = next_title - 1
             else:
                 data_end = max_row
 
-            # Извлекаем имя операции из колонки D строки header_row
+            # Extract operation name from column D of header_row
             op_name = ""
             op_val = ws.cell_value(header_row, 4)
             if op_val is not None and str(op_val).strip():
@@ -2008,21 +2118,21 @@ def _find_table_data_end(
     max_row: int,
     part_no_col: int,
 ) -> int:
-    """Найти последнюю строку данных таблицы.
+    """Find the last data row of a table.
 
-    Определяет границу между текущей таблицей и следующей операцией.
-    Срабатывает на:
-      1. Строку-заголовок следующей таблицы (содержит PART_NO_KEYWORDS)
-      2. Название следующей операции (строка с CJK текстом, где part_no_col пуст)
-      3. 5+ полностью пустых строк подряд (ВСЕ колонки пусты)
-      4. Резкое изменение формата строки (мерджи, пустые колонки)
+    Determines the boundary between the current table and the next operation.
+    Triggers on:
+      1. Header row of the next table (contains PART_NO_KEYWORDS)
+      2. Next operation title (row with CJK text where part_no_col is empty)
+      3. 5+ fully empty rows in a row (ALL columns empty)
+      4. Abrupt row format change (merges, empty columns)
 
-    ВАЖНО: empty-run проверяет ВСЮ строку на пустоту, а не только part_no колонку.
-    В SWM мега-файлах part-номера занимают первые несколько строк операции,
-    а затем идут строки инструкций и картинок где part_no_col пуст.
-    Проверка только part_no_col обрезала бы операцию после 2 строк.
+    IMPORTANT: empty-run checks the ENTIRE row for emptiness, not just part_no column.
+    In mega-files, part numbers occupy the first few rows of an operation,
+    then come instruction and image rows where part_no_col is empty.
+    Checking only part_no_col would cut the operation after 2 rows.
     """
-    from burlak_parser.heuristic_analyzer import PART_NO_KEYWORDS
+    from app.services.heuristic_analyzer import PART_NO_KEYWORDS
 
     CJK_RE = re.compile(r"[一-鿿㐀-䶿]")
 
@@ -2036,7 +2146,7 @@ def _find_table_data_end(
         # if the ENTIRE row is empty (not just part_no column)
         non_empty = 0
         row_values_check: list[str] = []
-        max_check_col = min((ws.max_column or 10) + 1, 25)
+        max_check_col = min((ws.max_column or 10) + 1, 200)
         for c in range(1, max_check_col):
             v = ws.cell_value(r, c)
             if v is not None:
@@ -2053,13 +2163,13 @@ def _find_table_data_end(
                 return r - 1
 
         # ── Operation title detection ──
-        # Если part_no_col пуст, но в строке есть CJK текст (название операции),
-        # это граница следующей операции
+        # If part_no_col is empty but the row has CJK text (operation title),
+        # this is the next operation boundary
         pn_val = ws.cell_value(r, part_no_col)
         pn_is_empty = pn_val is None or (isinstance(pn_val, str) and not pn_val.strip())
 
         if pn_is_empty and non_empty >= 1:
-            # Проверяем: есть ли CJK текст в строке (признак названия операции)
+            # Check: is there CJK text in the row (operation title indicator)
             has_cjk = False
             for c in range(1, max_check_col):
                 v = ws.cell_value(r, c)
@@ -2067,19 +2177,19 @@ def _find_table_data_end(
                     has_cjk = True
                     break
             if has_cjk:
-                # Проверяем: не является ли это просто пустой строкой с одним значением
-                # Если CJK текст и part_no_col пуст — вероятно, это название операции
-                # Проверяем что следующая строка тоже пуста или содержит заголовок
+                # Check: is this just an empty row with a single value
+                # If CJK text and part_no_col empty — likely an operation title
+                # Check that the next row is also empty or contains a header
                 if r + 1 <= max_row:
                     next_pn = ws.cell_value(r + 1, part_no_col)
                     next_is_empty = next_pn is None or (
                         isinstance(next_pn, str) and not next_pn.strip()
                     )
                     if next_is_empty:
-                        # Два пустых part_no подряд с CJK текстом — граница
+                        # Two consecutive empty part_no with CJK text — boundary
                         return r - 1
-                # Одинокая CJK-строка с пустым part_no — тоже граница
-                # (для SWM где заголовки идут вплотную)
+                # Lone CJK row with empty part_no — also a boundary
+                # (for formats where headers are tightly packed)
                 if r - header_row > 3:
                     return r - 1
 
@@ -2097,7 +2207,7 @@ def _find_table_data_end(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# УНИВЕРСАЛЬНЫЙ ДЕТЕКТОР ПОВТОРЯЮЩИХСЯ ШАБЛОНОВ (SWM-style)
+# UNIVERSAL REPEATING PATTERN DETECTOR
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -2105,22 +2215,21 @@ def _detect_repeating_pattern_boundaries(
     source_path: str,
     sheet_name: str,
 ) -> list[TableBoundary]:
-    """Обнаружить границы таблиц через поиск повторяющихся шаблонов строк.
+    """Detect table boundaries by searching for repeating row patterns.
 
-    Используется как универсальный fallback для SWM-формата, где
-    find_part_table() может пропускать таблицы из-за нестандартных
-    заголовков или отсутствия явных qty/name колонок.
+    Used as a universal fallback for formats where
+    find_part_table() may miss tables due to non-standard
+    headers or missing explicit qty/name columns.
 
-    Алгоритм:
-      1. Находит строки, где колонка A содержит числа (признак part-number)
-      2. Группирует последовательные блоки данных
-      3. Разделяет блоки по пустым строкам или строкам-заголовкам
+    Algorithm:
+      1. Find rows where column A contains numbers (part-number indicator)
+      2. Group sequential data blocks
+      3. Split blocks by empty rows or header rows
 
     Returns:
-        Список TableBoundary.
+        List of TableBoundary.
     """
-    from burlak_parser.card_parser import ExcelReader
-    from burlak_parser.heuristic_analyzer import HeuristicAnalyzer
+    from app.services.heuristic_analyzer import HeuristicAnalyzer
 
     boundaries: list[TableBoundary] = []
     reader = ExcelReader(source_path)
@@ -2135,14 +2244,14 @@ def _detect_repeating_pattern_boundaries(
 
         CJK_RE = re.compile(r"[一-鿿㐀-䶿]")
 
-        # Сканируем все строки: ищем блоки данных (part-number в колонках A-D)
-        # Универсальный поиск: part-numbers могут быть в любой из первых 4 колонок
+        # Scan all rows: search for data blocks (part-number in columns A-D)
+        # Universal search: part-numbers can be in any of the first 4 columns
         data_blocks: list[tuple[int, int]] = []  # (start_row, end_row)
         in_block = False
         block_start = 0
         empty_count = 0
         SCAN_COLS = (
-            8  # Columns A-H (wider scan for SWM where data may be right-aligned)
+            8  # Columns A-H (wider scan where data may be right-aligned)
         )
 
         for r in range(1, max_row + 1):
@@ -2179,16 +2288,16 @@ def _detect_repeating_pattern_boundaries(
                         in_block = False
                         empty_count = 0
 
-        # Закрываем последний блок
+        # Close last block
         if in_block:
             data_blocks.append((block_start, max_row))
 
-        # Фильтруем: минимум 3 строки данных в блоке
+        # Filter: minimum 3 data rows in block
         for idx, (start, end) in enumerate(data_blocks):
             if end - start < 2:
                 continue
 
-            # Ищем заголовок над блоком
+            # Search for header above block
             header_row = start
             for r in range(max(1, start - 5), start):
                 row_vals = []
@@ -2275,7 +2384,6 @@ def _cleanup_workbook_for_single_sheet(
     if _HAS_LXML:
         wb_root = _lxml_etree.fromstring(wb_bytes)
         ns = NS_MAIN
-        ns_r = NS_R
 
         # Fix bookViews: activeTab=0, firstSheet=0
         book_views = wb_root.find(f"{{{ns}}}bookViews")
@@ -2477,33 +2585,33 @@ def _vertical_split_worker(
     card_label: str,
     preloaded_zip: bytes | None = None,
 ) -> list[str]:
-    """Разделить один лист по вертикальным границам через ZIP-манипуляцию.
+    """Split one sheet by vertical boundaries via ZIP manipulation.
 
-    Сохраняет изображения, форматирование и стили, работая напрямую
-    с ZIP-структурой .xlsx файла (а не через openpyxl Workbook).
+    Preserves images, formatting and styles by working directly
+    with the .xlsx ZIP structure (not via openpyxl Workbook).
 
-    Алгоритм для каждой операции:
-      1. Скопировать исходный .xlsx (один лист, все изображения).
-      2. Отфильтровать sheet XML: оставить только <row> нужного диапазона.
-      3. Отфильтровать drawing XML: оставить только anchors нужного диапазона.
-      4. Скорректировать row-позиции в anchors.
-      5. Записать изменённый ZIP.
+    Algorithm for each operation:
+      1. Copy the source .xlsx (one sheet, all images).
+      2. Filter sheet XML: keep only <row> for the target range.
+      3. Filter drawing XML: keep only anchors for the target range.
+      4. Adjust row positions in anchors.
+      5. Write the modified ZIP.
 
     Args:
-        source_path: Путь к исходному .xlsx файлу (уже один лист).
-        output_dir: Директория для сохранения результатов.
-        sheet_name: Имя листа.
-        boundaries: Список границ таблиц (операций).
-        card_label: Метка для именования файлов.
+        source_path: Path to the source .xlsx file (already one sheet).
+        output_dir: Output directory.
+        sheet_name: Sheet name.
+        boundaries: List of table (operation) boundaries.
+        card_label: Label for file naming.
 
     Returns:
-        Список путей к созданным файлам.
+        List of created file paths.
     """
     os.makedirs(output_path_dir := output_dir, exist_ok=True)
     created: list[str] = []
-    safe_label = _safe_filename(card_label)[:50] if card_label else ""
+    _safe_filename(card_label)[:50] if card_label else ""
 
-    # Читаем ZIP в память
+    # Read ZIP into memory
     if preloaded_zip is not None:
         zip_data = preloaded_zip
     else:
@@ -2514,7 +2622,7 @@ def _vertical_split_worker(
             logger.error("Cannot read source for vertical split: %s", e)
             return created
 
-    # Читаем все ZIP-entries один раз
+    # Read all ZIP entries once
     try:
         with zipfile.ZipFile(io.BytesIO(zip_data), "r") as zf:
             all_entries: dict[str, bytes] = {}
@@ -2527,9 +2635,9 @@ def _vertical_split_worker(
         logger.error("Cannot open source ZIP for vertical split: %s", e)
         return created
 
-    all_names = set(all_entries.keys())
+    set(all_entries.keys())
 
-    # Находим имя листа в workbook.xml для определения rId
+    # Find sheet name in workbook.xml to determine rId
     wb_xml_bytes = all_entries.get("xl/workbook.xml")
     if wb_xml_bytes is None:
         return created
@@ -2549,7 +2657,7 @@ def _vertical_split_worker(
     if target_r_id is None:
         return created
 
-    # rId → target path из workbook.xml.rels
+    # rId → target path from workbook.xml.rels
     sheet_target: str | None = None
     rels_bytes = all_entries.get("xl/_rels/workbook.xml.rels")
     if rels_bytes is not None:
@@ -2566,7 +2674,7 @@ def _vertical_split_worker(
     if sheet_target is None:
         return created
 
-    # Определяем drawing XML для этого листа
+    # Determine drawing XML for this sheet
     sheet_dir = os.path.dirname(sheet_target)
     sheet_base = os.path.basename(sheet_target)
     sheet_rels_path = f"{sheet_dir}/_rels/{sheet_base}.rels"
@@ -2591,14 +2699,13 @@ def _vertical_split_worker(
             elif "comment" in rtype.lower():
                 comments_path = resolved
 
-    # Читаем drawing XML как bytes (НЕ через ET — сохраняем оригинальные namespaces)
-    drawing_xml_bytes: bytes | None = None
+    # Read drawing XML as bytes (NOT via ET — preserve original namespaces)
     if drawing_path and drawing_path in all_entries:
-        drawing_xml_bytes = all_entries[drawing_path]
+        all_entries[drawing_path]
 
     safe_label_prefix = _safe_filename(card_label)[:50] if card_label else ""
 
-    # ── Находим ВСЕ drawing файлы и их rels (WPS может привязывать image к не тому sheet) ──
+    # ── Find ALL drawing files and their rels (WPS may bind image to wrong sheet) ──
     all_drawings: dict[str, bytes] = {}  # drawing_path -> raw bytes
     all_drawing_rels: dict[str, str] = {}  # drawing_rels_path -> drawing_path
     all_drawing_rels_map: dict[
@@ -2650,13 +2757,13 @@ def _vertical_split_worker(
             )
             continue
 
-        # ── Фильтруем ВСЕ drawing XML и собираем retained rIds ──
+        # ── Filter ALL drawing XML and collect retained rIds ──
         filtered_drawings: dict[
             str, bytes | None
         ] = {}  # drawing_path -> filtered bytes (None = skip)
         retained_image_paths: set[str] = set()
         current_retained_rids: set[str] = set()
-        comments_fully_removed = False  # True если все комментарии вне диапазона
+        comments_fully_removed = False  # True if all comments are outside the range
         if comments_path and comments_path in all_entries:
             test_filtered = _filter_comments_xml(
                 all_entries[comments_path], boundary.header_row, boundary.data_end
@@ -2739,7 +2846,7 @@ def _vertical_split_worker(
                         name in all_drawing_rels
                         and filtered_drawings.get(all_drawing_rels[name]) is not None
                     ):
-                        parent_drawing = all_drawing_rels[name]
+                        all_drawing_rels[name]
                         rids_for_dr = set()
                         # all_drawing_rels_map is keyed by rels path (name), not drawing path
                         for r, p in all_drawing_rels_map.get(name, {}).items():
@@ -2764,10 +2871,10 @@ def _vertical_split_worker(
                             data, boundary.header_row, boundary.data_end
                         )
                         if filtered_comments is None:
-                            continue  # Все комментарии вне диапазона — пропускаем
+                            continue  # All comments outside range — skip
                         data = filtered_comments
 
-                    # ── Удаляем ссылку на comments из sheet .rels ──
+                    # ── Remove comments reference from sheet .rels ──
                     if (
                         comments_fully_removed
                         and name == sheet_rels_path
@@ -2789,7 +2896,7 @@ def _vertical_split_worker(
                         except ET.ParseError:
                             pass
 
-                    # ── Удаляем Override для comments из Content_Types ──
+                    # ── Remove comments Override from Content_Types ──
                     if (
                         comments_fully_removed
                         and name == "[Content_Types].xml"
@@ -2808,13 +2915,13 @@ def _vertical_split_worker(
                         )
                         data = ct_str.encode("utf-8")
 
-                    # ── Фильтрация медиа: пропускаем неиспользуемые изображения ──
-                    # БЕЗОПАСНАЯ СТРАТЕГИЯ: копируем все медиа по умолчанию.
-                    # Фильтруем ТОЛЬКО если:
-                    #   1. all_drawing_rels_map непустой (успешно распарсили .rels)
-                    #   2. retained_image_paths непустой (есть anchors в диапазоне)
-                    # Если хотя бы одно условие не выполнено — копируем все медиа.
-                    # Это предотвращает потерю изображений при неполных данных.
+                    # ── Media filtering: skip unused images ──
+                    # SAFE STRATEGY: copy all media by default.
+                    # Filter ONLY if:
+                    #   1. all_drawing_rels_map is not empty (.rels parsed successfully)
+                    #   2. retained_image_paths is not empty (anchors exist in range)
+                    # If either condition fails — copy all media.
+                    # This prevents image loss when data is incomplete.
                     any_rels_parsed = any(
                         rid_map for rid_map in all_drawing_rels_map.values()
                     )
@@ -2826,8 +2933,8 @@ def _vertical_split_worker(
                                     "Filtered media: %s (not in retained set)",
                                     name,
                                 )
-                                continue  # Не копируем неиспользуемое изображение
-                        # else: копируем все медиа (safe default)
+                                continue  # Skip unused image
+                        # else: copy all media (safe default)
 
                     zf_write.writestr(name, data)
 
@@ -2846,7 +2953,7 @@ def _vertical_split_worker(
 
         created.append(output_path)
         logger.info(
-            "Вертикальный split (ZIP): операция %d '%s' [%d-%d] → %s",
+            "Vertical split (ZIP): operation %d '%s' [%d-%d] → %s",
             i + 1,
             boundary.operation_name[:30] or "",
             boundary.header_row,
@@ -3313,15 +3420,15 @@ def _filter_drawing_xml(
     keep_from_row: int,
     keep_to_row: int,
 ) -> bytes:
-    """Отфильтровать drawing XML, оставляя только anchors нужного диапазона.
+    """Filter drawing XML, keeping only anchors in the target range.
 
-    Использует regex-based строковые операции вместо ET.fromstring/ET.tostring
-    для сохранения оригинальных namespace declarations (xmlns:ns2, xmlns:ns4
-    и т.д.), которые Python ET может переименовать при сериализации,
-    вызывая ошибку Excel "Repaired Records: Drawing shape".
+    Uses regex-based string operations instead of ET.fromstring/ET.tostring
+    to preserve original namespace declarations (xmlns:ns2, xmlns:ns4
+    etc.) which Python ET may rename during serialization,
+    causing the Excel error "Repaired Records: Drawing shape".
 
-    Поддерживает twoCellAnchor, oneCellAnchor и absoluteAnchor.
-    Корректирует row-позиции anchors.
+    Supports twoCellAnchor, oneCellAnchor and absoluteAnchor.
+    Adjusts anchor row positions.
     """
     result, _ = _filter_drawing_xml_with_rids(
         drawing_data,
@@ -3571,7 +3678,6 @@ def _filter_drawing_rels(
     """
     if _HAS_LXML:
         root = _lxml_etree.fromstring(rels_data)
-        ns = NS_PKG_RELS
         to_remove = []
         for rel in root:
             rid = rel.get("Id", "")
