@@ -1,19 +1,19 @@
-"""Модуль конвертации .xls → .xlsx через LibreOffice.
+""".xls → .xlsx conversion module via LibreOffice.
 
-Использует LibreOffice headless mode для конвертации legacy .xls файлов
-в современный .xlsx формат с сохранением изображений, форматирования
-и структуры данных.
+Uses LibreOffice headless mode to convert legacy .xls files
+to modern .xlsx format while preserving images, formatting,
+and data structure.
 
-Преимущества перед xlrd:
-  - Сохраняет изображения (встроенные OLE-объекты, рисунки)
-  - Сохраняет conditional formatting
-  - Сохраняет merged cells корректно
-  - Поддерживает .xls (BIFF) форматы старых версий Excel
+Advantages over xlrd:
+  - Preserves images (embedded OLE objects, drawings)
+  - Preserves conditional formatting
+  - Preserves merged cells correctly
+  - Supports legacy .xls (BIFF) formats
 
-Примечание:
-  - Требуется установленный LibreOffice в системе
-  - Конвертация выполняется через subprocess (headless mode)
-  - Временные файлы создаются в указанной директории
+Note:
+  - Requires LibreOffice installed on the system
+  - Conversion runs via subprocess (headless mode)
+  - Temp files are created in the specified directory
 """
 
 from __future__ import annotations
@@ -25,26 +25,26 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
-# Кэш путей к LibreOffice binary
+# Cached path to LibreOffice binary
 _libreoffice_path: str | None = None
 
 
 def find_libreoffice() -> str | None:
-    """Найти путь к LibreOffice binary.
+    """Find the path to the LibreOffice binary.
 
-    Проверяет:
-      1. Переменную окружения LIBREOFFICE_PATH
+    Checks:
+      1. LIBREOFFICE_PATH environment variable
       2. which libreoffice / which soffice
-      3. Типичные пути установки
+      3. Typical installation paths
 
     Returns:
-        Путь к LibreOffice или None если не найден.
+        Path to LibreOffice or None if not found.
     """
     global _libreoffice_path
     if _libreoffice_path is not None:
         return _libreoffice_path
 
-    # 1. Переменная окружения
+    # 1. Environment variable
     env_path = os.environ.get("LIBREOFFICE_PATH")
     if env_path and os.path.isfile(env_path):
         _libreoffice_path = env_path
@@ -67,7 +67,7 @@ def find_libreoffice() -> str | None:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             continue
 
-    # 3. Типичные пути
+    # 3. Typical paths
     typical_paths = [
         "/usr/bin/libreoffice",
         "/usr/bin/soffice",
@@ -87,7 +87,7 @@ def find_libreoffice() -> str | None:
 
 
 def is_libreoffice_available() -> bool:
-    """Проверить, доступен ли LibreOffice."""
+    """Check whether LibreOffice is available."""
     return find_libreoffice() is not None
 
 
@@ -96,36 +96,36 @@ def convert_xls_to_xlsx(
     output_dir: str | None = None,
     timeout: int = 120,
 ) -> str | None:
-    """Конвертировать .xls файл в .xlsx через LibreOffice.
+    """Convert a .xls file to .xlsx via LibreOffice.
 
     Args:
-        xls_path: Путь к исходному .xls файлу.
-        output_dir: Директория для сохранения результата.
-                    Если None — создаётся временная директория.
-        timeout: Таймаут конвертации в секундах.
+        xls_path: Path to the source .xls file.
+        output_dir: Directory to save the result.
+                    If None, a temp directory is created.
+        timeout: Conversion timeout in seconds.
 
     Returns:
-        Путь к сконвертированному .xlsx файлу или None при ошибке.
+        Path to the converted .xlsx file, or None on error.
     """
     lo_path = find_libreoffice()
     if lo_path is None:
         logger.warning(
-            "LibreOffice не найден. Конвертация .xls → .xlsx невозможна. "
-            "Установите LibreOffice или установите переменную окружения "
-            "LIBREOFFICE_PATH."
+            "LibreOffice not found. .xls → .xlsx conversion impossible. "
+            "Install LibreOffice or set the LIBREOFFICE_PATH "
+            "environment variable."
         )
         return None
 
     if not os.path.isfile(xls_path):
-        logger.error("Файл не найден: %s", xls_path)
+        logger.error("File not found: %s", xls_path)
         return None
 
     ext = os.path.splitext(xls_path)[1].lower()
     if ext != ".xls":
-        logger.debug("Файл не .xls, конвертация не требуется: %s", xls_path)
+        logger.debug("Not a .xls file, conversion not needed: %s", xls_path)
         return None
 
-    # Создаём временную директорию для вывода, если не указана
+    # Create a temp output directory if not specified
     if output_dir is None:
         output_dir = tempfile.mkdtemp(prefix="burlak_xls_convert_")
     else:
@@ -133,12 +133,12 @@ def convert_xls_to_xlsx(
 
     try:
         logger.info(
-            "Конвертация .xls → .xlsx: %s → %s",
+            "Converting .xls → .xlsx: %s → %s",
             os.path.basename(xls_path),
             output_dir,
         )
 
-        # LibreOffice headless конвертация
+        # LibreOffice headless conversion
         cmd = [
             lo_path,
             "--headless",
@@ -158,33 +158,33 @@ def convert_xls_to_xlsx(
 
         if result.returncode != 0:
             logger.warning(
-                "LibreOffice конвертация завершилась с кодом %d: %s",
+                "LibreOffice conversion exited with code %d: %s",
                 result.returncode,
                 result.stderr[:500] if result.stderr else "",
             )
 
-        # Ищем сконвертированный файл
+        # Find the converted file
         base_name = os.path.splitext(os.path.basename(xls_path))[0]
         xlsx_path = os.path.join(output_dir, f"{base_name}.xlsx")
 
         if os.path.isfile(xlsx_path):
             file_size = os.path.getsize(xlsx_path)
             logger.info(
-                "Конвертация успешна: %s (%.1f MB)",
+                "Conversion succeeded: %s (%.1f MB)",
                 os.path.basename(xlsx_path),
                 file_size / (1024 * 1024),
             )
             return xlsx_path
 
-        # Fallback: ищем любой .xlsx файл в output_dir с похожим именем
+        # Fallback: search for any .xlsx file in output_dir with a similar name
         for fn in os.listdir(output_dir):
             if fn.endswith(".xlsx") and base_name[:10] in fn:
                 found_path = os.path.join(output_dir, fn)
-                logger.info("Найден сконвертированный файл: %s", fn)
+                logger.info("Found converted file: %s", fn)
                 return found_path
 
         logger.warning(
-            "Сконвертированный .xlsx файл не найден в %s. LibreOffice вывод: %s",
+            "Converted .xlsx file not found in %s. LibreOffice output: %s",
             output_dir,
             result.stdout[:500] if result.stdout else "",
         )
@@ -192,16 +192,16 @@ def convert_xls_to_xlsx(
 
     except subprocess.TimeoutExpired:
         logger.error(
-            "Таймаут конвертации .xls → .xlsx (%d сек): %s",
+            "Conversion timeout (%d sec): %s",
             timeout,
             os.path.basename(xls_path),
         )
         return None
     except FileNotFoundError:
-        logger.error("LibreOffice не найден: %s", lo_path)
+        logger.error("LibreOffice not found: %s", lo_path)
         return None
     except Exception as e:
-        logger.error("Ошибка конвертации .xls → .xlsx: %s", e)
+        logger.error("Error converting .xls → .xlsx: %s", e)
         return None
 
 
@@ -210,23 +210,23 @@ def convert_xls_files_batch(
     temp_dir: str,
     max_workers: int = 2,
 ) -> dict[str, str]:
-    """Конвертировать список .xls файлов в .xlsx.
+    """Convert a batch of .xls files to .xlsx.
 
     Args:
-        xls_files: Список путей к .xls файлам.
-        temp_dir: Директория для сконвертированных файлов.
-        max_workers: Максимальное количество параллельных конвертаций.
+        xls_files: List of paths to .xls files.
+        temp_dir: Directory for converted files.
+        max_workers: Maximum number of parallel conversions.
 
     Returns:
-        Словарь {оригинальный_путь: путь_к_сконвертированному_xlsx}.
-        Файлы, которые не удалось сконвертировать, отсутствуют в словаре.
+        Dict {original_path: converted_xlsx_path}.
+        Files that could not be converted are absent from the dict.
     """
     if not xls_files:
         return {}
 
     if not is_libreoffice_available():
         logger.warning(
-            "LibreOffice недоступен. %d .xls файлов не будут конвертированы.",
+            "LibreOffice not available. %d .xls files will not be converted.",
             len(xls_files),
         )
         return {}
@@ -235,7 +235,7 @@ def convert_xls_files_batch(
     converted: dict[str, str] = {}
 
     logger.info(
-        "Конвертация %d .xls файлов через LibreOffice...",
+        "Converting %d .xls files via LibreOffice...",
         len(xls_files),
     )
 
@@ -250,12 +250,12 @@ def convert_xls_files_batch(
             )
         else:
             logger.warning(
-                "  ✗ Конвертация не удалась: %s",
+                "  ✗ Conversion failed: %s",
                 os.path.basename(xls_path),
             )
 
     logger.info(
-        "Конвертация завершена: %d/%d успешно",
+        "Conversion complete: %d/%d succeeded",
         len(converted),
         len(xls_files),
     )

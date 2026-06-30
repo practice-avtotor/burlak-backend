@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 # Pattern for detecting a number (integer or decimal, comma or dot separator)
 NUMERIC_RE = re.compile(r"^\s*[-+]?\d+(?:[\.,]\d+)?\s*$")
 
-# Pattern for "S"-like markers (BAIC: "S" = part present)
+# Pattern for "S"-like markers ("S" = part present)
 S_MARKER_RE = re.compile(r"^\s*[sS]\s*$")
 
-# Pattern for dash markers (BAIC: "–" = no part)
+# Pattern for dash markers ("–" = no part)
 DASH_MARKER_RE = re.compile(r"^\s*[\-\–\—\‒\―]{1,3}\s*$")
 
 # Pattern for "– –" (double dash)

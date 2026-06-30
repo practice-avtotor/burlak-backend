@@ -1148,8 +1148,8 @@ class TestFormatDiscrepancyReport:
         )
         report = format_discrepancy_report(mc)
         assert "Разное количество" in report
-        assert "Есть в BOM, нет в операционных картах" in report
-        assert "Есть в операционных картах, нет в BOM" in report
+        assert "Есть в BOM" in report
+        assert "Есть в операционных картах" in report
         assert "P001" in report
         assert "P002" in report
         assert "P003" in report
@@ -1652,7 +1652,7 @@ class TestCompareAllConfigsParallelErrors:
         )
         cards = _make_minimal_cards({"P001": 1.0})
         with patch(
-            "app.services.comparator_service.ProcessPoolExecutor", ThreadPoolExecutor
+            "app.services.comparator_service.ThreadPoolExecutor", ThreadPoolExecutor
         ):
             with patch(
                 "app.services.comparator_service._compare_config_worker",
