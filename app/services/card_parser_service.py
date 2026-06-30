@@ -587,6 +587,7 @@ class CardParserService:
         """
         empty_rows_sep = multi_card_cfg.get("empty_rows_separator", 1)
         parts_data_start = multi_card_cfg.get("parts_data_start_row", 0)
+        parts_header_row = multi_card_cfg.get("parts_header_row", 0)
         card_end_markers: list[str] = multi_card_cfg.get("card_end_markers", [])
         max_cards = multi_card_cfg.get("max_cards", 0)
 
@@ -614,10 +615,13 @@ class CardParserService:
             # parts_data_start_row is a 1-based relative offset from card_start.
             #   parts_data_start_row=1 → data starts at card_start (first row of card)
             #   parts_data_start_row=2 → data starts at card_start + 1 (skip 1 header row)
+            # If parts_data_start_row is absent, fall back to parts_header_row + 1.
             if parts_data_start > 0:
                 actual_data_start = card_start + parts_data_start - 1
+            elif parts_header_row > 0:
+                actual_data_start = card_start + parts_header_row
             else:
-                # Relative to card start: skip header rows
+                # Default: skip 1 row (assume header at card_start)
                 actual_data_start = card_start + 1
 
             # Find the end of this card (empty row or end marker)
