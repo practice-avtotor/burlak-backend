@@ -826,7 +826,7 @@ class TestGetConfigQuantities:
         assert result["P001"].name_cn == "Part1"
 
     def test_get_config_not_found(self, bom_data: BOMData):
-        with pytest.raises(ValueError, match="не найдена"):
+        with pytest.raises(ValueError, match="not found"):
             get_config_quantities(bom_data, "NonExistent")
 
     def test_get_all_configs(self, bom_data: BOMData):
@@ -1452,7 +1452,7 @@ class TestBOMServiceExtended:
 
     def test_get_parts_for_config_not_found(self, svc_and_bom: tuple[BOMService, str]):
         svc, _ = svc_and_bom
-        with pytest.raises(ValueError, match="не найдена"):
+        with pytest.raises(ValueError, match="not found"):
             svc.get_parts_for_config("NonExistent")
 
     def test_get_all_configs(self, svc_and_bom: tuple[BOMService, str]):
@@ -1481,7 +1481,7 @@ class TestBOMServiceExtended:
 
     def test_get_all_configs_not_loaded(self):
         svc = BOMService()
-        with pytest.raises(RuntimeError, match="не загружен"):
+        with pytest.raises(RuntimeError, match="BOM is not loaded"):
             svc.get_all_configs()
 
 

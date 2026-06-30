@@ -6,7 +6,7 @@ file grouping by naming patterns to reduce redundant ML calls.
 
 Critical constraints:
   - All operations are in-memory — no disk I/O.
-  - Column count is capped at 50 to prevent memory issues with huge sheets.
+  - Column count is capped at 200 to prevent memory issues with huge sheets.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def extract_snapshot_from_bytes(
 
     Opens the workbook entirely in memory via ``openpyxl.load_workbook``
     with ``io.BytesIO``. Gathers the first *max_rows* rows of each sheet
-    (capped at 50 columns) so the ML service can determine table layout
+    (capped at 200 columns) so the ML service can determine table layout
     without seeing the full file.
 
     Args:
@@ -48,7 +48,7 @@ def extract_snapshot_from_bytes(
           - ``sheets``: list of per-sheet snapshots, each containing:
               - ``name``: sheet title.
               - ``max_row``: total rows in the sheet.
-              - ``max_column``: total columns (capped at 50 in snapshot).
+              - ``max_column``: total columns (capped at 200 in snapshot).
               - ``rows``: list of rows, each row is a list of cell values.
     """
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
@@ -106,8 +106,8 @@ def group_by_format(file_paths: list[str]) -> dict[str, list[str]]:
         Dict mapping group key → list of file paths in that group.
 
     Examples:
-        >>> group_by_format(["SQRT-AS-001.xlsx", "SQRT-AS-002.xlsx"])
-        {'SQRT-AS-': ['SQRT-AS-001.xlsx', 'SQRT-AS-002.xlsx']}
+        >>> group_by_format(["ABC-AS-001.xlsx", "ABC-AS-002.xlsx"])
+        {'ABC-AS-': ['ABC-AS-001.xlsx', 'ABC-AS-002.xlsx']}
     """
     groups: dict[str, list[str]] = defaultdict(list)
 

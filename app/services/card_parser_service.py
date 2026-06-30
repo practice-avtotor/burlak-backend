@@ -57,8 +57,12 @@ class ParsedPart:
 
 
 @dataclass
-class CardParseResult:
-    """Result of parsing one operational card XLSX."""
+class MLCardParseResult:
+    """Result of parsing one operational card XLSX via ML-driven config.
+
+    Renamed from ``CardParseResult`` to avoid collision with
+    :class:`app.schemas.cards.CardParseResult` (different schema).
+    """
 
     file_name: str
     file_type: str  # "operational_card" | "service" | "unknown"
@@ -225,7 +229,7 @@ class CardParserService:
         """
         return classify_file(filename, self._classification_rules)
 
-    def parse_card(self, data: bytes, filename: str) -> CardParseResult:
+    def parse_card(self, data: bytes, filename: str) -> MLCardParseResult:
         """Parse an operational card XLSX from raw bytes.
 
         Args:
@@ -233,14 +237,14 @@ class CardParserService:
             filename: Original filename (used for classification and logging).
 
         Returns:
-            :class:`CardParseResult` with extracted parts.
+            :class:`MLCardParseResult` with extracted parts.
 
         Raises:
             ValueError: If the file cannot be opened as XLSX.
         """
         file_type = self.classify(filename)
         if file_type == "service":
-            return CardParseResult(
+            return MLCardParseResult(
                 file_name=filename,
                 file_type="service",
                 parts=[],
@@ -249,7 +253,7 @@ class CardParserService:
             )
         if file_type == "unknown":
             logger.warning("Unknown file type, skipping: %s", filename)
-            return CardParseResult(
+            return MLCardParseResult(
                 file_name=filename,
                 file_type="unknown",
                 parts=[],
@@ -264,7 +268,7 @@ class CardParserService:
 
     # ------------------------------------------------------------------
 
-    def _parse_operational_card(self, data: bytes, filename: str) -> CardParseResult:
+    def _parse_operational_card(self, data: bytes, filename: str) -> MLCardParseResult:
         """Core parsing logic for operational card files."""
         part_no_col = self._columns.get("part_no", 0)
         qty_col = self._columns.get("qty", 0)
@@ -274,7 +278,7 @@ class CardParserService:
         end_markers: list[str] = self._table_boundaries.get("end_markers", [])
 
         if part_no_col <= 0:
-            return CardParseResult(
+            return MLCardParseResult(
                 file_name=filename,
                 file_type="operational_card",
                 parts=[],
@@ -354,7 +358,7 @@ class CardParserService:
         finally:
             wb.close()
 
-        return CardParseResult(
+        return MLCardParseResult(
             file_name=filename,
             file_type="operational_card",
             parts=parts,
