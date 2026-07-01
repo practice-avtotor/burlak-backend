@@ -369,11 +369,14 @@ class CardProcessingService:
         sub_card_parts: list[list[ParsedPart]] = [[] for _ in card_boundaries]
 
         for p in parse_result.parts:
+            assigned = False
             for idx, (sheet_name, start_row, end_row) in enumerate(card_boundaries):
                 if p.source_sheet == sheet_name and start_row <= p.row <= end_row:
                     sub_card_parts[idx].append(p)
+                    assigned = True
                     break
-
+            if not assigned and sub_card_parts:
+                sub_card_parts[-1].append(p)
         for idx, parts_group in enumerate(sub_card_parts):
             if not parts_group:
                 logger.warning("No parts found for sub-card %d, skipping", idx)
