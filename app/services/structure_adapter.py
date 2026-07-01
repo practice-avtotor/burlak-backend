@@ -162,8 +162,10 @@ class StructureAdapter:
 
         self._circuit_breaker.record_success()
         result: dict[str, Any] = response.json()
-        logger.info("Received mapping_config with %d keys", len(result))
-        return result
+        # Извлекаем mapping_config из ответа ML-сервиса
+        mapping_config = result.get("mapping_config", result)
+        logger.info("Received mapping_config with %d keys", len(mapping_config))
+        return mapping_config
 
     def translate_batch(
         self,

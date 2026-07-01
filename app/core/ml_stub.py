@@ -129,6 +129,22 @@ async def analyze_structure(request: Request) -> dict[str, Any]:
                     ],
                 },
             },
+            "mapping": {
+                "bom_to_card": {
+                    "part_no": {
+                        "source": "bom.columns.part_no",
+                        "target": "cards.columns.part_no",
+                    },
+                    "name": {
+                        "source": "bom.columns.name_cn",
+                        "target": "cards.columns.name_cn",
+                    },
+                    "quantity": {
+                        "source": "bom.columns.qty",
+                        "target": "cards.columns.qty",
+                    },
+                },
+            },
         },
     }
 
