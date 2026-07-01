@@ -336,9 +336,15 @@ class CardParserService:
                 if sheets:
                     sheet0 = sheets[0]
                     tb = dict(sheet0.get("table_boundaries", {}))
-                    if "header_rows" not in tb and sheet0.get("header_rows") is not None:
+                    if (
+                        "header_rows" not in tb
+                        and sheet0.get("header_rows") is not None
+                    ):
                         tb["header_rows"] = sheet0["header_rows"]
-                    if "data_start_row" not in tb and sheet0.get("data_start_row") is not None:
+                    if (
+                        "data_start_row" not in tb
+                        and sheet0.get("data_start_row") is not None
+                    ):
                         tb["data_start_row"] = sheet0["data_start_row"]
                     columns = sheet0.get("columns", {})
                     if not tb.get("end_markers") and fmt.get("end_markers"):
@@ -377,7 +383,9 @@ class CardParserService:
 
         # Multi-card configuration (from table_boundaries.multi_card)
         self._multi_card_cfg: dict[str, Any] | None = tb.get("multi_card")
-        self._is_multi_card = tb.get("type") == "multi_card" and bool(self._multi_card_cfg)
+        self._is_multi_card = tb.get("type") == "multi_card" and bool(
+            self._multi_card_cfg
+        )
         self._last_card_boundaries: list[tuple[str, int, int]] | None = None
 
     # ------------------------------------------------------------------
@@ -397,11 +405,7 @@ class CardParserService:
         Returns:
             Tuple of ``(table_boundaries, columns)`` dicts.
         """
-        if (
-            self._formats
-            and format_group
-            and format_group in self._formats
-        ):
+        if self._formats and format_group and format_group in self._formats:
             fmt = self._formats[format_group]
             return fmt["table_boundaries"], fmt["columns"]
 
@@ -654,8 +658,13 @@ class CardParserService:
             multi_card_cfg = table_boundaries.get("multi_card")
             if multi_card_cfg:
                 parts, boundaries = self._extract_parts_multi_card(
-                    ws, sheet_name, part_no_col, qty_col, name_col,
-                    data_start, multi_card_cfg,
+                    ws,
+                    sheet_name,
+                    part_no_col,
+                    qty_col,
+                    name_col,
+                    data_start,
+                    multi_card_cfg,
                 )
                 # Store boundaries on the instance so _parse_operational_card
                 # can read them when building MLCardParseResult
@@ -801,7 +810,9 @@ class CardParserService:
 
         while row_idx <= max_row:
             # Skip empty rows (separators between cards)
-            while row_idx <= max_row and self._is_row_empty(ws, row_idx, part_no_col, name_col):
+            while row_idx <= max_row and self._is_row_empty(
+                ws, row_idx, part_no_col, name_col
+            ):
                 row_idx += 1
 
             if row_idx > max_row:
@@ -828,9 +839,13 @@ class CardParserService:
 
             # Find the end of this card (empty row or end marker)
             card_end = self._find_card_end(
-                ws, actual_data_start, max_row,
-                empty_rows_sep, card_end_markers,
-                part_no_col, name_col,
+                ws,
+                actual_data_start,
+                max_row,
+                empty_rows_sep,
+                card_end_markers,
+                part_no_col,
+                name_col,
             )
 
             # Record boundary with sheet name for cross-sheet safety
@@ -897,7 +912,9 @@ class CardParserService:
 
         logger.info(
             "Multi-card sheet '%s': found %d card(s), extracted %d part(s)",
-            sheet_name, cards_found, len(parts),
+            sheet_name,
+            cards_found,
+            len(parts),
         )
         return parts, card_boundaries
 

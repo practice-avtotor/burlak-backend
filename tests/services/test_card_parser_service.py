@@ -468,6 +468,7 @@ class TestParserClassify:
         cfg = {"cards": {"columns": {}, "table_boundaries": {}}}
         CardParserService(cfg)
 
+
 # ═══════════════════════════════════════════════════════════════════════
 #  Multi-card sheet tests
 # ═══════════════════════════════════════════════════════════════════════
@@ -541,17 +542,25 @@ class TestMultiCard:
         sheet1, start1, end1 = result.card_boundaries[0]
         assert sheet1 == "S"
         assert start1 == 2  # first data row
-        assert end1 == 3    # last data row of card 1
+        assert end1 == 3  # last data row of card 1
 
         # Card 2 boundary
         sheet2, start2, end2 = result.card_boundaries[1]
         assert sheet2 == "S"
         assert start2 == 5  # first row of card 2 (header)
-        assert end2 == 7    # last data row of card 2
+        assert end2 == 7  # last data row of card 2
 
         # Verify parts belong to correct cards
-        card1_parts = [p for p in result.parts if p.source_sheet == sheet1 and start1 <= p.row <= end1]
-        card2_parts = [p for p in result.parts if p.source_sheet == sheet2 and start2 <= p.row <= end2]
+        card1_parts = [
+            p
+            for p in result.parts
+            if p.source_sheet == sheet1 and start1 <= p.row <= end1
+        ]
+        card2_parts = [
+            p
+            for p in result.parts
+            if p.source_sheet == sheet2 and start2 <= p.row <= end2
+        ]
         assert len(card1_parts) == 2
         assert len(card2_parts) == 2
         assert card1_parts[0].part_number == "P001"
@@ -597,7 +606,9 @@ class TestMultiCard:
         # Card 3: row 11 (P007) = 1 part (header at row 10 skipped)
         for (sh, s, e), expected_count in zip(result.card_boundaries, [2, 4, 1]):
             assert sh == "S"
-            card_parts = [p for p in result.parts if p.source_sheet == sh and s <= p.row <= e]
+            card_parts = [
+                p for p in result.parts if p.source_sheet == sh and s <= p.row <= e
+            ]
             assert len(card_parts) == expected_count, (
                 f"Card ({sh},{s},{e}): expected {expected_count} parts, got {len(card_parts)}"
             )
@@ -676,7 +687,10 @@ class TestClassifyFileWithFormat:
             "operational_keywords": ["作业指导书"],
         }
         assert classify_file_with_format("封面.xlsx", rules) == ("service", None)
-        assert classify_file_with_format("作业指导书_001.xlsx", rules) == ("operational_card", None)
+        assert classify_file_with_format("作业指导书_001.xlsx", rules) == (
+            "operational_card",
+            None,
+        )
 
     def test_new_schema_filename_regex_with_format_group(self):
         """New schema filename_regex returns the correct format_group."""
@@ -705,11 +719,13 @@ class TestClassifyFileWithFormat:
 
         # Matches first pattern → card_format_A
         assert classify_file_with_format("SQRT1L-A-AS-04001.xlsx", rules) == (
-            "operational_card", "card_format_A",
+            "operational_card",
+            "card_format_A",
         )
         # Matches second pattern → card_format_B
         assert classify_file_with_format("001-card.xlsx", rules) == (
-            "operational_card", "card_format_B",
+            "operational_card",
+            "card_format_B",
         )
         # Service file → service, no format_group
         assert classify_file_with_format("封面.xlsx", rules) == ("service", None)
@@ -737,10 +753,12 @@ class TestClassifyFileWithFormat:
         }
 
         assert classify_file_with_format("作业指导书_001.xlsx", rules) == (
-            "operational_card", "card_format_X",
+            "operational_card",
+            "card_format_X",
         )
         assert classify_file_with_format("工艺卡_100.xlsx", rules) == (
-            "operational_card", "card_format_X",
+            "operational_card",
+            "card_format_X",
         )
 
     def test_new_schema_service_takes_priority(self):
@@ -777,16 +795,25 @@ class TestClassifyFileWithFormat:
         }
 
         # Heuristic: digit prefix
-        assert classify_file_with_format("001-card.xlsx", rules) == ("operational_card", None)
+        assert classify_file_with_format("001-card.xlsx", rules) == (
+            "operational_card",
+            None,
+        )
         # Heuristic: AS pattern
-        assert classify_file_with_format("SQRT1L-A-AS-04001.xlsx", rules) == ("operational_card", None)
+        assert classify_file_with_format("SQRT1L-A-AS-04001.xlsx", rules) == (
+            "operational_card",
+            None,
+        )
 
     def test_no_rules_uses_defaults(self):
         """When classification_rules is None, defaults are used and format_group is None."""
         from app.services.card_parser_service import classify_file_with_format
 
         assert classify_file_with_format("封面.xlsx", None) == ("service", None)
-        assert classify_file_with_format("001-card.xlsx", None) == ("operational_card", None)
+        assert classify_file_with_format("001-card.xlsx", None) == (
+            "operational_card",
+            None,
+        )
         assert classify_file_with_format("random.xlsx", None) == ("unknown", None)
 
 
@@ -881,13 +908,15 @@ class TestParserWithFormats:
         parser = CardParserService(cfg)
 
         # SQRT1L-A-AS-04001 matches card_format_A → part_no=2, name=3, qty=4
-        data = _make_xlsx_bytes({
-            "Sheet1": [
-                ["H1", "Part No", "Name", "Qty"],  # row 1 — header
-                ["X", "P001", "Bolt", 2],           # row 2 — data
-                ["Y", "P002", "Nut", 1],            # row 3 — data
-            ],
-        })
+        data = _make_xlsx_bytes(
+            {
+                "Sheet1": [
+                    ["H1", "Part No", "Name", "Qty"],  # row 1 — header
+                    ["X", "P001", "Bolt", 2],  # row 2 — data
+                    ["Y", "P002", "Nut", 1],  # row 3 — data
+                ],
+            }
+        )
         result = parser.parse_card(data, "SQRT1L-A-AS-04001.xlsx")
         assert result.error is None, f"Unexpected error: {result.error}"
         assert len(result.parts) == 2
@@ -903,15 +932,17 @@ class TestParserWithFormats:
         # card_format_B has multi_card type with parts_data_start_row=2
         # actual_data_start = card_start + parts_data_start - 1 = 1 + 2 - 1 = 2
         # So row 1 is the card header, data starts at row 2
-        data = _make_xlsx_bytes({
-            "Sheet1": [
-                # Card 1 header row (row 1, skipped by parts_data_start_row=2)
-                [None] * 17 + ["Header"],
-                # Card 1 data rows (part_no at col 18)
-                [None] * 17 + ["P001", "Bolt", 2],
-                [None] * 17 + ["P002", "Nut", 1],
-            ],
-        })
+        data = _make_xlsx_bytes(
+            {
+                "Sheet1": [
+                    # Card 1 header row (row 1, skipped by parts_data_start_row=2)
+                    [None] * 17 + ["Header"],
+                    # Card 1 data rows (part_no at col 18)
+                    [None] * 17 + ["P001", "Bolt", 2],
+                    [None] * 17 + ["P002", "Nut", 1],
+                ],
+            }
+        )
         result = parser.parse_card(data, "001-card.xlsx")
         assert result.error is None, f"Unexpected error: {result.error}"
         assert len(result.parts) == 2
@@ -944,10 +975,12 @@ class TestParserWithFormats:
         parser = CardParserService(cfg)
 
         assert parser.classify_with_format("SQRT1L-A-AS-04001.xlsx") == (
-            "operational_card", "card_format_A",
+            "operational_card",
+            "card_format_A",
         )
         assert parser.classify_with_format("001-card.xlsx") == (
-            "operational_card", "card_format_B",
+            "operational_card",
+            "card_format_B",
         )
         assert parser.classify_with_format("封面.xlsx") == ("service", None)
         assert parser.classify_with_format("random.xlsx") == ("unknown", None)
