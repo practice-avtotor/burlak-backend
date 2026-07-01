@@ -207,8 +207,13 @@ class CardParserService:
             for fmt in formats.values():
                 sheets = fmt.get("sheets", [])
                 if sheets:
-                    tb = sheets[0].get("table_boundaries", {})
-                    columns = sheets[0].get("columns", {})
+                    sheet0 = sheets[0]
+                    tb = sheet0.get("table_boundaries", {})
+                    if "header_rows" not in tb and sheet0.get("header_rows") is not None:
+                        tb["header_rows"] = sheet0["header_rows"]
+                    if "data_start_row" not in tb and sheet0.get("data_start_row") is not None:
+                        tb["data_start_row"] = sheet0["data_start_row"]
+                    columns = sheet0.get("columns", {})
                     if not tb.get("end_markers") and fmt.get("end_markers"):
                         tb["end_markers"] = fmt["end_markers"]
                     break
