@@ -466,6 +466,498 @@ class TestParserClassify:
     def test_no_rules_uses_defaults(self):
         """When mapping_config has no classification rules, defaults are used."""
         cfg = {"cards": {"columns": {}, "table_boundaries": {}}}
+        CardParserService(cfg)
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Multi-card sheet tests
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestMultiCard:
+    """Tests for multi-card sheets (multiple cards stacked vertically)."""
+
+    def _multi_card_config(self) -> dict:
+        """Return mapping config with multi_card table_boundaries."""
+        return {
+            "cards": {
+                "file_classification_rules": {
+                    "service_keywords": ["封面", "目录", "template"],
+                    "operational_keywords": ["作业指导书"],
+                },
+                "table_boundaries": {
+                    "header_row": 1,
+                    "data_start_row": 2,
+                    "end_markers": ["签字", "审核"],
+                    "type": "multi_card",
+                    "multi_card": {
+                        "separator_type": "empty_rows",
+                        "empty_rows_separator": 1,
+                        "has_repeating_header": True,
+                        "parts_header_row": 1,
+                        "parts_data_start_row": 1,
+                        "max_cards": 0,
+                        "card_end_markers": ["签字", "审核"],
+                    },
+                },
+                "columns": {
+                    "part_no": 1,
+                    "qty": 3,
+                    "name": 2,
+                },
+                "sheets": {
+                    "default_type": "operational",
+                },
+            }
+        }
+
+    def test_two_cards_separated_by_empty_row(self):
+        """Two cards separated by one empty row — both should be parsed."""
+        cfg = self._multi_card_config()
         parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    # Card 1
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 2],
+                    ["P002", "Nut", 4],
+                    # empty separator row
+                    [None, None, None],
+                    # Card 2
+                    ["Part No", "Name", "Qty"],
+                    ["P003", "Washer", 6],
+                    ["P004", "Screw", 1],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None, f"Unexpected error: {result.error}"
+        assert len(result.parts) == 4
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 2
+
+        # Card 1 boundary: (sheet_name, start, end)
+        sheet1, start1, end1 = result.card_boundaries[0]
+        assert sheet1 == "S"
+        assert start1 == 2  # first data row
+        assert end1 == 3    # last data row of card 1
+
+        # Card 2 boundary
+        sheet2, start2, end2 = result.card_boundaries[1]
+        assert sheet2 == "S"
+        assert start2 == 5  # first row of card 2 (header)
+        assert end2 == 7    # last data row of card 2
+
+        # Verify parts belong to correct cards
+        card1_parts = [p for p in result.parts if p.source_sheet == sheet1 and start1 <= p.row <= end1]
+        card2_parts = [p for p in result.parts if p.source_sheet == sheet2 and start2 <= p.row <= end2]
+        assert len(card1_parts) == 2
+        assert len(card2_parts) == 2
+        assert card1_parts[0].part_number == "P001"
+        assert card2_parts[0].part_number == "P003"
+
+    def test_three_cards_different_sizes(self):
+        """Three cards of different sizes — verifies variable-length card support."""
+        cfg = self._multi_card_config()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    # Card 1 — 2 parts
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 1],
+                    ["P002", "Nut", 2],
+                    # separator
+                    [None, None, None],
+                    # Card 2 — 4 parts
+                    ["Part No", "Name", "Qty"],
+                    ["P003", "Washer", 3],
+                    ["P004", "Screw", 4],
+                    ["P005", "Pin", 5],
+                    ["P006", "Clip", 6],
+                    # separator
+                    [None, None, None],
+                    # Card 3 — 1 part
+                    ["Part No", "Name", "Qty"],
+                    ["P007", "Spring", 7],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None
+        assert len(result.parts) == 7
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 3
+
+        # Verify counts per card
+        # Card 1: rows 2-3 (P001, P002) = 2 parts
+        # Card 2: rows 6-8 (P003-P006) = 4 parts (header at row 5 skipped)
+        # Card 3: row 11 (P007) = 1 part (header at row 10 skipped)
+        for (sh, s, e), expected_count in zip(result.card_boundaries, [2, 4, 1]):
+            assert sh == "S"
+            card_parts = [p for p in result.parts if p.source_sheet == sh and s <= p.row <= e]
+            assert len(card_parts) == expected_count, (
+                f"Card ({sh},{s},{e}): expected {expected_count} parts, got {len(card_parts)}"
+            )
+
+    def test_multi_card_with_end_marker(self):
+        """End marker stops current card, next card starts after separator."""
+        cfg = self._multi_card_config()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    # Card 1
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 2],
+                    ["签字确认", None, None],  # end marker
+                    # separator
+                    [None, None, None],
+                    # Card 2
+                    ["Part No", "Name", "Qty"],
+                    ["P002", "Nut", 4],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None
+        # Both cards are parsed: P001 from card 1, P002 from card 2
+        assert len(result.parts) == 2
+        assert result.parts[0].part_number == "P001"
+        assert result.parts[1].part_number == "P002"
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 2
+
+        # Card 1 should end at the end marker row
+        sh1, start1, end1 = result.card_boundaries[0]
+        assert sh1 == "S"
+        assert end1 == 2  # P001 row, end marker excluded
+
+    def test_multi_card_single_card_falls_back(self):
+        """A multi_card config with only one card should still work (card_boundaries has 1 entry)."""
+        cfg = self._multi_card_config()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes(
+            {
+                "S": [
+                    ["Part No", "Name", "Qty"],
+                    ["P001", "Bolt", 2],
+                    ["P002", "Nut", 4],
+                ],
+            }
+        )
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None
+        assert len(result.parts) == 2
+        assert result.card_boundaries is not None
+        assert len(result.card_boundaries) == 1
         # Should still classify using built-in defaults
         assert parser.classify("封面.xlsx") == "service"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  classify_file_with_format
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestClassifyFileWithFormat:
+    """Tests for classify_file_with_format with the new schema."""
+
+    def test_legacy_schema_returns_none_format(self):
+        """Legacy schema (service_keywords/operational_keywords) returns None format_group."""
+        from app.services.card_parser_service import classify_file_with_format
+
+        rules = {
+            "service_keywords": ["封面"],
+            "operational_keywords": ["作业指导书"],
+        }
+        assert classify_file_with_format("封面.xlsx", rules) == ("service", None)
+        assert classify_file_with_format("作业指导书_001.xlsx", rules) == ("operational_card", None)
+
+    def test_new_schema_filename_regex_with_format_group(self):
+        """New schema filename_regex returns the correct format_group."""
+        from app.services.card_parser_service import classify_file_with_format
+
+        rules = {
+            "operational_card_patterns": [
+                {
+                    "type": "filename_regex",
+                    "pattern": "^[A-Za-z0-9]+-[A-Za-z0-9]*-AS-\\d+",
+                    "format_group": "card_format_A",
+                },
+                {
+                    "type": "filename_regex",
+                    "pattern": "^\\d{2,}",
+                    "format_group": "card_format_B",
+                },
+            ],
+            "service_file_patterns": [
+                {
+                    "type": "filename_keyword",
+                    "keywords": ["封面", "目录"],
+                },
+            ],
+        }
+
+        # Matches first pattern → card_format_A
+        assert classify_file_with_format("SQRT1L-A-AS-04001.xlsx", rules) == (
+            "operational_card", "card_format_A",
+        )
+        # Matches second pattern → card_format_B
+        assert classify_file_with_format("001-card.xlsx", rules) == (
+            "operational_card", "card_format_B",
+        )
+        # Service file → service, no format_group
+        assert classify_file_with_format("封面.xlsx", rules) == ("service", None)
+        # Unknown file → unknown, no format_group
+        assert classify_file_with_format("random.xlsx", rules) == ("unknown", None)
+
+    def test_new_schema_sheet_keyword_with_format_group(self):
+        """New schema sheet_keyword returns the correct format_group."""
+        from app.services.card_parser_service import classify_file_with_format
+
+        rules = {
+            "operational_card_patterns": [
+                {
+                    "type": "sheet_keyword",
+                    "keywords": ["作业指导书", "工艺卡"],
+                    "format_group": "card_format_X",
+                },
+            ],
+            "service_file_patterns": [
+                {
+                    "type": "filename_keyword",
+                    "keywords": ["封面"],
+                },
+            ],
+        }
+
+        assert classify_file_with_format("作业指导书_001.xlsx", rules) == (
+            "operational_card", "card_format_X",
+        )
+        assert classify_file_with_format("工艺卡_100.xlsx", rules) == (
+            "operational_card", "card_format_X",
+        )
+
+    def test_new_schema_service_takes_priority(self):
+        """Service patterns take priority over operational patterns."""
+        from app.services.card_parser_service import classify_file_with_format
+
+        rules = {
+            "operational_card_patterns": [
+                {
+                    "type": "filename_regex",
+                    "pattern": "^\\d{2,}",
+                    "format_group": "card_format_A",
+                },
+            ],
+            "service_file_patterns": [
+                {
+                    "type": "filename_keyword",
+                    "keywords": ["封面", "目录"],
+                },
+            ],
+        }
+
+        # Filename matches both operational regex AND service keyword
+        # Service should win
+        assert classify_file_with_format("001封面.xlsx", rules) == ("service", None)
+
+    def test_new_schema_heuristic_fallback(self):
+        """When no patterns match, heuristic fallbacks still work but return None format."""
+        from app.services.card_parser_service import classify_file_with_format
+
+        rules = {
+            "operational_card_patterns": [],
+            "service_file_patterns": [],
+        }
+
+        # Heuristic: digit prefix
+        assert classify_file_with_format("001-card.xlsx", rules) == ("operational_card", None)
+        # Heuristic: AS pattern
+        assert classify_file_with_format("SQRT1L-A-AS-04001.xlsx", rules) == ("operational_card", None)
+
+    def test_no_rules_uses_defaults(self):
+        """When classification_rules is None, defaults are used and format_group is None."""
+        from app.services.card_parser_service import classify_file_with_format
+
+        assert classify_file_with_format("封面.xlsx", None) == ("service", None)
+        assert classify_file_with_format("001-card.xlsx", None) == ("operational_card", None)
+        assert classify_file_with_format("random.xlsx", None) == ("unknown", None)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  CardParserService with new formats schema
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestParserWithFormats:
+    """Tests for CardParserService with the new cards.formats schema."""
+
+    def _mapping_with_two_formats(self) -> dict:
+        """Return a mapping_config with two formats and classification rules."""
+        return {
+            "cards": {
+                "file_classification_rules": {
+                    "operational_card_patterns": [
+                        {
+                            "type": "filename_regex",
+                            "pattern": "^[A-Za-z0-9]+-[A-Za-z0-9]*-AS-\\d+",
+                            "format_group": "card_format_A",
+                        },
+                        {
+                            "type": "filename_regex",
+                            "pattern": "^\\d{2,}",
+                            "format_group": "card_format_B",
+                        },
+                    ],
+                    "service_file_patterns": [
+                        {
+                            "type": "filename_keyword",
+                            "keywords": ["封面", "目录"],
+                        },
+                    ],
+                },
+                "formats": {
+                    "card_format_A": {
+                        "structure_type": "standard_table",
+                        "sheets": [
+                            {
+                                "sheet_name": None,
+                                "sheet_type": "card_data",
+                                "header_rows": [1],
+                                "data_start_row": 2,
+                                "columns": {
+                                    "part_no": {"col_index": 2},
+                                    "name_cn": {"col_index": 3},
+                                    "qty": {"col_index": 4},
+                                },
+                                "table_boundaries": {
+                                    "type": "end_markers",
+                                    "markers": ["签字", "审核"],
+                                    "empty_rows_threshold": 3,
+                                },
+                            }
+                        ],
+                    },
+                    "card_format_B": {
+                        "structure_type": "standard_table",
+                        "sheets": [
+                            {
+                                "sheet_name": None,
+                                "sheet_type": "card_data",
+                                "header_rows": [1],
+                                "data_start_row": 2,
+                                "columns": {
+                                    "part_no": {"col_index": 18},
+                                    "name_cn": {"col_index": 0},
+                                    "qty": {"col_index": 0},
+                                },
+                                "table_boundaries": {
+                                    "type": "multi_card",
+                                    "multi_card": {
+                                        "separator_type": "empty_row",
+                                        "empty_rows_separator": 1,
+                                        "has_repeating_header": True,
+                                        "parts_header_row": 1,
+                                        "parts_data_start_row": 1,
+                                        "max_cards": 0,
+                                    },
+                                },
+                            }
+                        ],
+                    },
+                },
+            },
+        }
+
+    def test_format_a_selected_for_as_pattern(self):
+        """Files matching card_format_A pattern use card_format_A columns (part_no=2)."""
+        cfg = self._mapping_with_two_formats()
+        parser = CardParserService(cfg)
+
+        # SQRT1L-A-AS-04001 matches card_format_A → part_no=2, name=3, qty=4
+        data = _make_xlsx_bytes({
+            "Sheet1": [
+                ["H1", "Part No", "Name", "Qty"],  # row 1 — header
+                ["X", "P001", "Bolt", 2],           # row 2 — data
+                ["Y", "P002", "Nut", 1],            # row 3 — data
+            ],
+        })
+        result = parser.parse_card(data, "SQRT1L-A-AS-04001.xlsx")
+        assert result.error is None, f"Unexpected error: {result.error}"
+        assert len(result.parts) == 2
+        assert result.parts[0].part_number == "P001"
+        assert result.parts[1].part_number == "P002"
+
+    def test_format_b_selected_for_digit_prefix(self):
+        """Files matching card_format_B pattern use card_format_B columns (part_no=18)."""
+        cfg = self._mapping_with_two_formats()
+        parser = CardParserService(cfg)
+
+        # 001-card matches card_format_B → part_no column index is 18
+        # card_format_B has multi_card type with parts_data_start_row=2
+        # actual_data_start = card_start + parts_data_start - 1 = 1 + 2 - 1 = 2
+        # So row 1 is the card header, data starts at row 2
+        data = _make_xlsx_bytes({
+            "Sheet1": [
+                # Card 1 header row (row 1, skipped by parts_data_start_row=2)
+                [None] * 17 + ["Header"],
+                # Card 1 data rows (part_no at col 18)
+                [None] * 17 + ["P001", "Bolt", 2],
+                [None] * 17 + ["P002", "Nut", 1],
+            ],
+        })
+        result = parser.parse_card(data, "001-card.xlsx")
+        assert result.error is None, f"Unexpected error: {result.error}"
+        assert len(result.parts) == 2
+        assert result.parts[0].part_number == "P001"
+        assert result.parts[1].part_number == "P002"
+
+    def test_service_file_still_skipped(self):
+        """Service files return empty result regardless of formats."""
+        cfg = self._mapping_with_two_formats()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes({"S": [["Data"]]})
+        result = parser.parse_card(data, "封面.xlsx")
+        assert result.file_type == "service"
+        assert result.parts == []
+
+    def test_unknown_file_still_skipped(self):
+        """Unknown files return empty result regardless of formats."""
+        cfg = self._mapping_with_two_formats()
+        parser = CardParserService(cfg)
+
+        data = _make_xlsx_bytes({"S": [["Data"]]})
+        result = parser.parse_card(data, "random.xlsx")
+        assert result.file_type == "unknown"
+        assert result.parts == []
+
+    def test_classify_with_format_returns_correct_group(self):
+        """Parser.classify_with_format returns the correct format_group."""
+        cfg = self._mapping_with_two_formats()
+        parser = CardParserService(cfg)
+
+        assert parser.classify_with_format("SQRT1L-A-AS-04001.xlsx") == (
+            "operational_card", "card_format_A",
+        )
+        assert parser.classify_with_format("001-card.xlsx") == (
+            "operational_card", "card_format_B",
+        )
+        assert parser.classify_with_format("封面.xlsx") == ("service", None)
+        assert parser.classify_with_format("random.xlsx") == ("unknown", None)
+
+    def test_classify_still_returns_just_type(self):
+        """Parser.classify still returns just the file type string."""
+        cfg = self._mapping_with_two_formats()
+        parser = CardParserService(cfg)
+
+        assert parser.classify("SQRT1L-A-AS-04001.xlsx") == "operational_card"
+        assert parser.classify("001-card.xlsx") == "operational_card"
+        assert parser.classify("封面.xlsx") == "service"
+        assert parser.classify("random.xlsx") == "unknown"

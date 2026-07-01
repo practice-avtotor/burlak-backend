@@ -28,18 +28,84 @@ async def analyze_structure(request: Request) -> dict[str, Any]:
                 ]
             },
             "cards": {
-                "table_boundaries": {
-                    "header_row": 1,
-                    "data_start_row": 2,
-                    "end_markers": ["签字", "审核"],
+                "formats": {
+                    "card_format_A": {
+                        "structure_type": "standard_table",
+                        "description": "Технологические карты 工艺卡片. Один файл содержит несколько карт, разделённых пустой строкой.",
+                        "card_number_source": "cell",
+                        "card_number_pattern": "CM-[A-Z0-9]+",
+                        "card_number_confidence": 0.90,
+                        "sheets": [
+                            {
+                                "sheet_name": None,
+                                "sheet_type": "card_data",
+                                "header_rows": [1],
+                                "data_start_row": 2,
+                                "columns": {
+                                    "part_no": {
+                                        "col_index": 18,
+                                        "header": "零部件代号",
+                                        "confidence": 0.95,
+                                    },
+                                    "name_cn": {
+                                        "col_index": 0,
+                                        "header": None,
+                                        "confidence": 0.0,
+                                    },
+                                    "qty": {
+                                        "col_index": 0,
+                                        "header": None,
+                                        "confidence": 0.0,
+                                    },
+                                },
+                                "table_boundaries": {
+                                    "type": "multi_card",
+                                    "multi_card": {
+                                        "separator_type": "empty_row",
+                                        "empty_rows_separator": 1,
+                                        "has_repeating_header": True,
+                                        "parts_header_row": 1,
+                                        "parts_data_start_row": 2,
+                                        "max_cards": 0,
+                                    },
+                                },
+                            }
+                        ],
+                    }
                 },
-                "columns": {
-                    "part_no": 1,
-                    "qty": 3,
-                    "name": 2,
-                },
-                "sheets": {
-                    "default_type": "operational",
+                "file_classification_rules": {
+                    "operational_card_patterns": [
+                        {
+                            "type": "filename_regex",
+                            "pattern": "^[A-Za-z0-9]+-[A-Za-z0-9]*-AS-\\d+",
+                            "format_group": "card_format_A",
+                        },
+                        {
+                            "type": "filename_regex",
+                            "pattern": "^[A-Za-z]{1,3}\\d{2,}",
+                            "format_group": "card_format_A",
+                        },
+                        {
+                            "type": "filename_regex",
+                            "pattern": "^\\d{2,}",
+                            "format_group": "card_format_A",
+                        },
+                        {
+                            "type": "sheet_keyword",
+                            "keywords": ["作业指导书", "作业要领书", "操作指导", "工艺卡", "工序卡"],
+                            "format_group": "card_format_A",
+                        },
+                    ],
+                    "service_file_patterns": [
+                        {
+                            "type": "filename_keyword",
+                            "keywords": ["封面", "目录", "记录表", "空表", "填写范本", "填写说明", "工时汇总", "对比"],
+                        },
+                        {
+                            "type": "filename_keyword",
+                            "keywords": ["обложка", "содержание", "cover", "toc", "template"],
+                        },
+                    ],
                 },
             },
         },
