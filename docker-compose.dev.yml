@@ -21,6 +21,29 @@ services:
       - "5000:5000"
     restart: unless-stopped
 
+  ml-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.ml
+    container_name: dev-ml-service
+    ports:
+      - "8001:8000"
+    environment:
+      OLLAMA_URL: http://ollama:11434/v1
+    depends_on:
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: dev-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
   web:
     build:
       context: .
@@ -32,7 +55,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DB_URL: /data/jobs.db
       STORAGE_PATH: /data
-      ML_SERVICE_URL: http://ml-mock:5000
+      ML_SERVICE_URL: http://ml-service:8000
     volumes:
       - ./data:/data
     depends_on:
@@ -52,7 +75,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DB_URL: /data/jobs.db
       STORAGE_PATH: /data
-      ML_SERVICE_URL: http://ml-mock:5000
+      ML_SERVICE_URL: http://ml-service:8000
     volumes:
       - ./data:/data
     depends_on:
@@ -61,3 +84,6 @@ services:
       ml-mock:
         condition: service_started
     restart: unless-stopped
+
+volumes:
+  ollama_data:
