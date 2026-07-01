@@ -10,17 +10,17 @@ class StructurePipeline:
 
     # Создаем объекты всех трех сервисов анализа
     def __init__(self):
-        self.bom = BomAnalyzer()
-        self.cards = CardsAnalyzer()
-        self.mapping = MappingBuilder()
+        self.bom_analyzer = BomAnalyzer()
+        self.cards_analyzer = CardsAnalyzer()
+        self.mapping_builder = MappingBuilder()
 
-    async def run(self, bom_snapshot: dict, cards: list[dict]):
+    async def run(self, bom: list[dict], sample_cards: list[dict]):
         started = time.time()
 
         # Запускаем все сервисы анализа
-        bom_result = await self.bom.analyze(bom_snapshot)
-        card_result = await self.cards.analyze(cards)
-        mapping_result = await self.mapping.build(bom_result, card_result)
+        bom_result = await self.bom_analyzer.analyze(bom)
+        card_result = await self.cards_analyzer.analyze(sample_cards)
+        mapping_result = await self.mapping_builder.build(bom_result, card_result)
 
         # Собираем итоговый ответ
         return {
