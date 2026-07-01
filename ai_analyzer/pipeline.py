@@ -14,7 +14,7 @@ class StructurePipeline:
         self.cards_analyzer = CardsAnalyzer()
         self.mapping_builder = MappingBuilder()
 
-    async def run(self, bom: list[dict], sample_cards: list[dict]):
+    async def run(self, bom: list[dict], sample_cards: list[dict], options: dict | None = None):
         started = time.time()
 
         # Запускаем все сервисы анализа
