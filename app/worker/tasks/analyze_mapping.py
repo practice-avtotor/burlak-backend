@@ -81,14 +81,9 @@ def analyze_mapping(self: Task, job_id: int) -> None:
             },
         }
         with StructureAdapter(settings.ml_service_url) as ml_client:
-            response = ml_client.analyze_structure(payload)
+            mapping_config = ml_client.analyze_structure(payload)
 
-        mapping_config = response.get("mapping_config", response)
-        if (
-            not mapping_config
-            or "bom" not in mapping_config
-            or "cards" not in mapping_config
-        ):
+        if "bom" not in mapping_config or "cards" not in mapping_config:
             raise ValueError("ML service returned invalid mapping configuration")
 
         # 6. Save mapping config to database
