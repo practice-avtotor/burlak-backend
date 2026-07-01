@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 from ai_analyzer.schemas import LLM_MODEL
@@ -6,10 +7,10 @@ from ai_analyzer.services import BomAnalyzer, CardsAnalyzer, MappingBuilder
 
 class StructurePipeline:
     """
-    Оркестратор
+    Orchestrator that runs BOM analysis, card analysis (in parallel),
+    then mapping building.
     """
 
-    # Создаем объекты всех трех сервисов анализа
     def __init__(self) -> None:
         self.bom_analyzer = BomAnalyzer()
         self.cards_analyzer = CardsAnalyzer()
@@ -21,14 +22,16 @@ class StructurePipeline:
         sample_cards: list[dict[str, object]],
         options: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        started = time.time()
+        started = time.monotonic()
 
-        # Запускаем все сервисы анализа
-        bom_result = await self.bom_analyzer.analyze(bom)
-        card_result = await self.cards_analyzer.analyze(sample_cards)
+        # Run BOM and card analysis in parallel — they are independent
+        bom_result, card_result = await asyncio.gather(
+            self.bom_analyzer.analyze(bom),
+            self.cards_analyzer.analyze(sample_cards),
+        )
+
         mapping_result = await self.mapping_builder.build(bom_result, card_result)
 
-        # Собираем итоговый ответ
         return {
             "status": "success",
             "mapping_config": {
@@ -37,7 +40,7 @@ class StructurePipeline:
                 "mapping": mapping_result.model_dump(),
                 "metadata": {
                     "analyzer_version": "1.0.0",
-                    "processing_time_ms": int((time.time() - started) * 1000),
+                    "processing_time_ms": int((time.monotonic() - started) * 1000),
                     "model": LLM_MODEL,
                     "warnings": [],
                 },
