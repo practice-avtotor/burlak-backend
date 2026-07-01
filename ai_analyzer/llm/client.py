@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
@@ -28,9 +28,7 @@ def get_client() -> AsyncOpenAI:
     """
     global _client
     if _client is None:
-        logger.info(
-            "Creating AsyncOpenAI client: base_url=%s", OLLAMA_URL
-        )
+        logger.info("Creating AsyncOpenAI client: base_url=%s", OLLAMA_URL)
         _client = AsyncOpenAI(
             base_url=OLLAMA_URL,
             api_key=OLLAMA_API_KEY,

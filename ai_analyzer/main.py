@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -13,7 +14,7 @@ from ai_analyzer.services import LLMAnalysisError
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: verify LLM connectivity on startup, close client on shutdown."""
     # Startup: verify the LLM client can be created
     try:
