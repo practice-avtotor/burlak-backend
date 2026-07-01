@@ -80,10 +80,11 @@ class MultiCardConfig(BaseModel):
     max_cards: int | None = 0
 
 class TableBoundaries(BaseModel):
-    type: Literal["end_markers", "empty_rows", "next_header", "fixed_count"] = Field(description="Как определять границы таблицы")
+    type: Literal["end_markers", "empty_rows", "next_header", "fixed_count", "multi_card"] = Field(description="Как определять границы таблицы")
     markers: list[str] | None = Field(None, description="Список слов-маркеров (например, 'Итого', 'Проверил') для конца таблицы")
     empty_rows_threshold: int | None = Field(None, description="Порог пустых строк для завершения парсинга")
     fixed_count: int | None = Field(None, description="Жесткое количество строк (если есть)")
+    multi_card: MultiCardConfig | None = Field(None, description="Конфигурация для multi_card")
 
 
 class CardColumns(BaseModel):
