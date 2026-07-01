@@ -1,7 +1,8 @@
+import os
 from collections.abc import AsyncGenerator, Generator
 
 import aiosqlite
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
@@ -18,6 +19,24 @@ SessionLocal = sessionmaker(bind=engine)
 
 class Base(DeclarativeBase):
     pass
+
+
+def init_db() -> None:
+    """Initialize the database: create directories, set WAL mode, and create tables."""
+    db_path = settings.sqlite_db_path
+    if db_path:
+        db_dir = os.path.dirname(os.path.abspath(db_path))
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+
+    # Import models locally to register them on Base.metadata
+    from app.db import models  # noqa: F401
+
+    # Establish WAL mode and create tables
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+        conn.commit()
+    Base.metadata.create_all(bind=engine)
 
 
 def get_db() -> Generator[Session, None, None]:
