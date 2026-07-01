@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: "main"
+  pull_request:
+    branches: "main"
+
+jobs:
+  ci:
+    name: CI Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run linter (Ruff)
+        run: uv run ruff check .
+
+      - name: Check formatting (Ruff)
+        run: uv run ruff format . --check
+
+      - name: Run type checker (Mypy)
+        run: uv run mypy .
+
+      - name: Run tests (Pytest)
+        run: uv run pytest

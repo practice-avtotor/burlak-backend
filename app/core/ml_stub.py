@@ -92,18 +92,39 @@ async def analyze_structure(request: Request) -> dict[str, Any]:
                         },
                         {
                             "type": "sheet_keyword",
-                            "keywords": ["作业指导书", "作业要领书", "操作指导", "工艺卡", "工序卡"],
+                            "keywords": [
+                                "作业指导书",
+                                "作业要领书",
+                                "操作指导",
+                                "工艺卡",
+                                "工序卡",
+                            ],
                             "format_group": "card_format_A",
                         },
                     ],
                     "service_file_patterns": [
                         {
                             "type": "filename_keyword",
-                            "keywords": ["封面", "目录", "记录表", "空表", "填写范本", "填写说明", "工时汇总", "对比"],
+                            "keywords": [
+                                "封面",
+                                "目录",
+                                "记录表",
+                                "空表",
+                                "填写范本",
+                                "填写说明",
+                                "工时汇总",
+                                "对比",
+                            ],
                         },
                         {
                             "type": "filename_keyword",
-                            "keywords": ["обложка", "содержание", "cover", "toc", "template"],
+                            "keywords": [
+                                "обложка",
+                                "содержание",
+                                "cover",
+                                "toc",
+                                "template",
+                            ],
                         },
                     ],
                 },

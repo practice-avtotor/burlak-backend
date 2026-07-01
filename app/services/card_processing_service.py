@@ -228,7 +228,8 @@ class CardProcessingService:
                 # Multi-card: split parts by card boundaries and process each sub-card
                 logger.info(
                     "Multi-card sheet detected: %d cards in %s",
-                    len(card_boundaries), filename,
+                    len(card_boundaries),
+                    filename,
                 )
                 self._process_multi_card_parts(
                     job_id=self.job_id,
@@ -276,16 +277,12 @@ class CardProcessingService:
                         list(unique_texts), target_lang="ru"
                     )
                 else:
-                    with StructureAdapter(
-                        self.settings.ml_service_url
-                    ) as ml_client:
+                    with StructureAdapter(self.settings.ml_service_url) as ml_client:
                         translations = ml_client.translate_batch(
                             list(unique_texts), target_lang="ru"
                         )
             except Exception as e:
-                logger.warning(
-                    f"Translation batch failed: {e}. Using original text."
-                )
+                logger.warning(f"Translation batch failed: {e}. Using original text.")
 
         # Build parts list for materials JSON
         json_parts = [
@@ -389,7 +386,10 @@ class CardProcessingService:
 
             logger.info(
                 "Processing sub-card %d/%d: %s (%d parts)",
-                idx + 1, len(card_boundaries), sub_name, len(parts_group),
+                idx + 1,
+                len(card_boundaries),
+                sub_name,
+                len(parts_group),
             )
 
             sub_dest_xlsx_path = os.path.join(
