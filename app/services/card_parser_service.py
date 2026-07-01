@@ -118,43 +118,166 @@ def classify_file(
     Uses rules from ``mapping_config.cards.file_classification_rules`` when
     provided, otherwise falls back to built-in keyword lists.
 
+    .. note::
+
+        This function returns only the file type string.  If you need the
+        ``format_group`` name (for the new ``cards.formats`` schema), use
+        :func:`classify_file_with_format` instead.
+
     Args:
         filename: Basename of the file (without directory path).
         classification_rules: Optional dict with keys
             ``service_keywords`` and ``operational_keywords``
-            (each a list of strings).
+            (each a list of strings), **or** the new schema keys
+            ``operational_card_patterns`` and ``service_file_patterns``
+            (each a list of pattern dicts).
 
     Returns:
         One of ``"service"``, ``"operational_card"``, ``"unknown"``.
     """
+    file_type, _ = classify_file_with_format(filename, classification_rules)
+    return file_type
+
+
+def classify_file_with_format(
+    filename: str,
+    classification_rules: dict[str, Any] | None = None,
+) -> tuple[str, str | None]:
+    """Classify a file and return ``(file_type, format_group)``.
+
+    Supports both the legacy flat schema (``service_keywords`` /
+    ``operational_keywords``) and the new schema
+    (``operational_card_patterns`` / ``service_file_patterns`` with
+    ``format_group``).
+
+    Args:
+        filename: Basename of the file (without directory path).
+        classification_rules: Optional dict from
+            ``mapping_config.cards.file_classification_rules``.
+
+    Returns:
+        Tuple of ``(file_type, format_group)`` where ``file_type`` is one of
+        ``"service"``, ``"operational_card"``, ``"unknown"`` and
+        ``format_group`` is the matched format name (e.g. ``"card_format_A"``)
+        or ``None`` for service/unknown files or when using legacy rules.
+    """
     name_lower = os.path.splitext(filename)[0].lower()
 
+    # ── Detect schema type ──────────────────────────────────────────
+    # New schema: has "operational_card_patterns" or "service_file_patterns"
+    # Legacy schema: has "service_keywords" or "operational_keywords"
+    has_new_schema = bool(
+        classification_rules
+        and (
+            classification_rules.get("operational_card_patterns")
+            or classification_rules.get("service_file_patterns")
+        )
+    )
+
+    if has_new_schema:
+        return _classify_with_new_schema(name_lower, classification_rules)
+    else:
+        return _classify_with_legacy_schema(name_lower, classification_rules)
+
+
+def _classify_with_new_schema(
+    name_lower: str,
+    rules: dict[str, Any] | None,
+) -> tuple[str, str | None]:
+    """Classify using the new ``operational_card_patterns`` /
+    ``service_file_patterns`` schema.
+    """
+    if not rules:
+        return "unknown", None
+
+    # ── Service file patterns (highest priority) ────────────────────
+    svc_patterns: list[dict[str, Any]] = rules.get("service_file_patterns", [])
+    for pattern_def in svc_patterns:
+        ptype = pattern_def.get("type", "")
+        if ptype == "filename_keyword":
+            keywords: list[str] = pattern_def.get("keywords", [])
+            for kw in keywords:
+                if kw.lower() in name_lower:
+                    return "service", None
+        elif ptype == "filename_regex":
+            regex = pattern_def.get("pattern", "")
+            if regex and re.search(regex, name_lower, re.IGNORECASE):
+                return "service", None
+        elif ptype == "sheet_keyword":
+            # sheet_keyword patterns are checked against the filename
+            # as a heuristic fallback; if the filename itself contains
+            # any of the keywords, classify as service.
+            keywords = pattern_def.get("keywords", [])
+            for kw in keywords:
+                if kw.lower() in name_lower:
+                    return "service", None
+
+    # ── Operational card patterns ───────────────────────────────────
+    op_patterns: list[dict[str, Any]] = rules.get("operational_card_patterns", [])
+    for pattern_def in op_patterns:
+        ptype = pattern_def.get("type", "")
+        format_group: str | None = pattern_def.get("format_group")
+
+        if ptype == "filename_regex":
+            regex = pattern_def.get("pattern", "")
+            if regex and re.search(regex, name_lower, re.IGNORECASE):
+                return "operational_card", format_group
+
+        elif ptype == "filename_keyword":
+            keywords = pattern_def.get("keywords", [])
+            for kw in keywords:
+                if kw.lower() in name_lower:
+                    return "operational_card", format_group
+
+        elif ptype == "sheet_keyword":
+            keywords = pattern_def.get("keywords", [])
+            for kw in keywords:
+                if kw.lower() in name_lower:
+                    return "operational_card", format_group
+
+    # ── Heuristic fallbacks (same as legacy) ────────────────────────
+    if re.match(r"^(?:[A-Za-z]{1,3})?\d{2,}", name_lower):
+        return "operational_card", None
+
+    if re.match(r"^[a-z0-9]+-[a-z0-9]*-as-\d+", name_lower):
+        return "operational_card", None
+
+    return "unknown", None
+
+
+def _classify_with_legacy_schema(
+    name_lower: str,
+    rules: dict[str, Any] | None,
+) -> tuple[str, str | None]:
+    """Classify using the legacy flat ``service_keywords`` /
+    ``operational_keywords`` schema.
+    """
     svc_keywords = _DEFAULT_SERVICE_KEYWORDS
     op_keywords = _DEFAULT_OPERATIONAL_KEYWORDS
 
-    if classification_rules:
-        svc_keywords = classification_rules.get("service_keywords", svc_keywords)
-        op_keywords = classification_rules.get("operational_keywords", op_keywords)
+    if rules:
+        svc_keywords = rules.get("service_keywords", svc_keywords)
+        op_keywords = rules.get("operational_keywords", op_keywords)
 
     # Service keywords take priority (highest precedence)
     for kw in svc_keywords:
         if kw.lower() in name_lower:
-            return "service"
+            return "service", None
 
     # Operational card keywords
     for kw in op_keywords:
         if kw.lower() in name_lower:
-            return "operational_card"
+            return "operational_card", None
 
     # Heuristic: filename starts with 2+ digits (operation number)
     if re.match(r"^(?:[A-Za-z]{1,3})?\d{2,}", name_lower):
-        return "operational_card"
+        return "operational_card", None
 
     # Heuristic: pattern like MODEL-A-AS-NNNNN
     if re.match(r"^[a-z0-9]+-[a-z0-9]*-as-\d+", name_lower):
-        return "operational_card"
+        return "operational_card", None
 
-    return "unknown"
+    return "unknown", None
 
 
 # ---------------------------------------------------------------------------
@@ -198,17 +321,21 @@ class CardParserService:
             "file_classification_rules"
         )
 
-        # ── Adapter: normalise new nested format → flat format ──────────
+        # ── Store all formats keyed by format name ──────────────────────
         # New format: cards.formats.card_format_A.sheets[0].{columns, table_boundaries}
         # Old format: cards.{columns, table_boundaries}
+        self._formats: dict[str, dict[str, Any]] | None = None
+        self._flat_tb: dict[str, Any] | None = None
+        self._flat_columns: dict[str, Any] | None = None
+
         formats = cards_cfg.get("formats")
         if isinstance(formats, dict):
-            tb, columns = {}, {}
-            for fmt in formats.values():
+            self._formats = {}
+            for fmt_name, fmt in formats.items():
                 sheets = fmt.get("sheets", [])
                 if sheets:
                     sheet0 = sheets[0]
-                    tb = sheet0.get("table_boundaries", {})
+                    tb = dict(sheet0.get("table_boundaries", {}))
                     if "header_rows" not in tb and sheet0.get("header_rows") is not None:
                         tb["header_rows"] = sheet0["header_rows"]
                     if "data_start_row" not in tb and sheet0.get("data_start_row") is not None:
@@ -216,10 +343,16 @@ class CardParserService:
                     columns = sheet0.get("columns", {})
                     if not tb.get("end_markers") and fmt.get("end_markers"):
                         tb["end_markers"] = fmt["end_markers"]
-                    break
+                    self._formats[fmt_name] = {
+                        "table_boundaries": tb,
+                        "columns": columns,
+                    }
         else:
-            tb = cards_cfg.get("table_boundaries", {})
-            columns = cards_cfg.get("columns", {})
+            self._flat_tb = cards_cfg.get("table_boundaries", {})
+            self._flat_columns = cards_cfg.get("columns", {})
+
+        # ── Resolve initial config (for legacy flat schema) ─────────────
+        tb, columns = self._resolve_format_config(None)
 
         self._table_boundaries: dict[str, Any] = tb
 
@@ -234,15 +367,7 @@ class CardParserService:
 
         # ML column schema adapter: handle nested dictionaries (e.g. {"col_index": 1})
         # Also map name_cn → name for backward compatibility
-        self._columns = {}
-        for key, val in columns.items():
-            if isinstance(val, dict):
-                self._columns[key] = val.get("col_index", 0)
-            else:
-                self._columns[key] = int(val) if val else 0
-        # If name_cn is present but name is not, alias name_cn → name
-        if "name_cn" in self._columns and "name" not in self._columns:
-            self._columns["name"] = self._columns["name_cn"]
+        self._columns = self._normalise_columns(columns)
 
         # Plain attribute for name column index (used by card_processing_service)
         val = self._columns.get("name", 0)
@@ -256,6 +381,56 @@ class CardParserService:
         self._last_card_boundaries: list[tuple[str, int, int]] | None = None
 
     # ------------------------------------------------------------------
+    # Format resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_format_config(
+        self,
+        format_group: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Resolve ``(table_boundaries, columns)`` for a given format group.
+
+        If ``format_group`` is specified and exists in ``self._formats``,
+        returns that format's config.  Otherwise falls back to the legacy
+        flat ``cards.table_boundaries`` / ``cards.columns``.
+
+        Returns:
+            Tuple of ``(table_boundaries, columns)`` dicts.
+        """
+        if (
+            self._formats
+            and format_group
+            and format_group in self._formats
+        ):
+            fmt = self._formats[format_group]
+            return fmt["table_boundaries"], fmt["columns"]
+
+        # Fall back to flat config
+        if self._flat_tb is not None and self._flat_columns is not None:
+            return self._flat_tb, self._flat_columns
+
+        # Last resort: empty configs
+        return {}, {}
+
+    @staticmethod
+    def _normalise_columns(columns: dict[str, Any]) -> dict[str, int]:
+        """Normalise column dict values to plain integer indices.
+
+        Handles both ``{"part_no": 1}`` and ``{"part_no": {"col_index": 1}}``.
+        Also aliases ``name_cn`` → ``name`` for backward compatibility.
+        """
+        result: dict[str, int] = {}
+        for key, val in columns.items():
+            if isinstance(val, dict):
+                result[key] = val.get("col_index", 0)
+            else:
+                result[key] = int(val) if val else 0
+        # If name_cn is present but name is not, alias name_cn → name
+        if "name_cn" in result and "name" not in result:
+            result["name"] = result["name_cn"]
+        return result
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -266,6 +441,15 @@ class CardParserService:
             ``"service"``, ``"operational_card"``, or ``"unknown"``.
         """
         return classify_file(filename, self._classification_rules)
+
+    def classify_with_format(self, filename: str) -> tuple[str, str | None]:
+        """Classify a file and return ``(file_type, format_group)``.
+
+        The ``format_group`` is the matched format name (e.g.
+        ``"card_format_A"``) from ``file_classification_rules``, or
+        ``None`` for service/unknown files or when using legacy rules.
+        """
+        return classify_file_with_format(filename, self._classification_rules)
 
     def parse_card(self, data: bytes, filename: str) -> MLCardParseResult:
         """Parse an operational card XLSX from raw bytes.
@@ -280,7 +464,7 @@ class CardParserService:
         Raises:
             ValueError: If the file cannot be opened as XLSX.
         """
-        file_type = self.classify(filename)
+        file_type, format_group = self.classify_with_format(filename)
         if file_type == "service":
             return MLCardParseResult(
                 file_name=filename,
@@ -299,21 +483,54 @@ class CardParserService:
                 original_part_numbers={},
             )
 
-        return self._parse_operational_card(data, filename)
+        # Resolve format-specific config for this file
+        tb, columns = self._resolve_format_config(format_group)
+        return self._parse_operational_card(data, filename, tb, columns)
 
     # ------------------------------------------------------------------
     # Internal helpers
 
     # ------------------------------------------------------------------
 
-    def _parse_operational_card(self, data: bytes, filename: str) -> MLCardParseResult:
-        """Core parsing logic for operational card files."""
-        part_no_col = self._columns.get("part_no", 0)
-        qty_col = self._columns.get("qty", 0)
-        name_col = self._columns.get("name", 0)
-        header_row = self._header_row
-        data_start = self._table_boundaries.get("data_start_row", header_row + 1)
-        end_markers: list[str] = self._table_boundaries.get("end_markers", [])
+    def _parse_operational_card(
+        self,
+        data: bytes,
+        filename: str,
+        tb: dict[str, Any] | None = None,
+        columns: dict[str, Any] | None = None,
+    ) -> MLCardParseResult:
+        """Core parsing logic for operational card files.
+
+        Args:
+            data: Raw XLSX bytes.
+            filename: Original filename (for logging).
+            tb: Table boundaries dict for the resolved format.
+                Falls back to ``self._table_boundaries`` if ``None``.
+            columns: Columns dict for the resolved format (may contain
+                nested ``{"col_index": N}`` values).
+                Falls back to ``self._columns`` if ``None``.
+        """
+        tb = tb if tb is not None else self._table_boundaries
+        columns = columns if columns is not None else self._columns
+
+        # Normalise columns (handle nested {"col_index": N} values)
+        normalised = self._normalise_columns(columns)
+
+        part_no_col = normalised.get("part_no", 0)
+        qty_col = normalised.get("qty", 0)
+        name_col = normalised.get("name", 0)
+
+        # Resolve header_row from the format-specific tb
+        header_rows = tb.get("header_rows", [1])
+        if isinstance(header_rows, list) and header_rows:
+            header_row = header_rows[0] if isinstance(header_rows[0], int) else 1
+        elif isinstance(header_rows, int):
+            header_row = header_rows
+        else:
+            header_row = tb.get("header_row", 1)
+
+        data_start = tb.get("data_start_row", header_row + 1)
+        end_markers: list[str] = tb.get("end_markers", [])
 
         if part_no_col <= 0:
             return MLCardParseResult(
@@ -359,7 +576,7 @@ class CardParserService:
                     name_col,
                     data_start,
                     end_markers,
-                    table_boundaries=self._table_boundaries,
+                    table_boundaries=tb,
                 )
                 if sheet_parts:
                     sheets_parsed += 1
