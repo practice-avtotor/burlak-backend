@@ -26,7 +26,7 @@ async def llm_analysis_error_handler(request: Request, exc: LLMAnalysisError):
 async def analyze_structure(request: AnalyzeStructureRequest):
     pipeline = StructurePipeline()
     result = await pipeline.run(
-        bom_snapshot=request.bom,
-        cards=request.sample_cards
+        bom=request.bom,
+        sample_cards=request.sample_cards
     )
     return result
