@@ -39,8 +39,12 @@ async def safe_parse(
     model: str, messages: list[ChatCompletionMessageParam], response_format: type[Any]
 ) -> Any:
     try:
-        response = client.beta.chat.completions.parse(
-            model=model, messages=messages, response_format=response_format
+        import anyio
+
+        response = await anyio.to_thread.run_sync(
+            lambda: client.beta.chat.completions.parse(
+                model=model, messages=messages, response_format=response_format
+            )
         )
         return response.choices[0].message.parsed
 
