@@ -1,6 +1,6 @@
 import time
-from services import BomAnalyzer, CardsAnalyzer, MappingBuilder
-from schemas import LLM_MODEL
+from ai_analyzer.services import BomAnalyzer, CardsAnalyzer, MappingBuilder
+from ai_analyzer.schemas import LLM_MODEL
 
 
 class StructurePipeline:

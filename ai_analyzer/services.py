@@ -1,9 +1,9 @@
 import json
 import pydantic
 import openai
-from llm.client import client
-from llm.prompts import BOM_SYSTEM_PROMPT, CARD_SYSTEM_PROMPT, MAPPING_SYSTEM_PROMPT
-from schemas import LLM_MODEL, BomAnalysisResult, CardAnalysisResult, MappingResult
+from ai_analyzer.llm.client import client
+from ai_analyzer.llm.prompts import BOM_SYSTEM_PROMPT, CARD_SYSTEM_PROMPT, MAPPING_SYSTEM_PROMPT
+from ai_analyzer.schemas import LLM_MODEL, BomAnalysisResult, CardAnalysisResult, MappingResult
 
 
 class LLMAnalysisError(Exception):

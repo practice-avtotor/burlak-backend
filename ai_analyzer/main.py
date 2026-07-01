@@ -1,9 +1,9 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from schemas import AnalyzeStructureRequest
-from pipeline import StructurePipeline
-from services import LLMAnalysisError
 from fastapi.exceptions import RequestValidationError
+from ai_analyzer.schemas import AnalyzeStructureRequest
+from ai_analyzer.pipeline import StructurePipeline
+from ai_analyzer.services import LLMAnalysisError
 
 app = FastAPI(title="ML Structure Analysis Service")
 
