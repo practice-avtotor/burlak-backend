@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -163,7 +163,9 @@ class StructureAdapter:
         self._circuit_breaker.record_success()
         result: dict[str, Any] = response.json()
         # Извлекаем mapping_config из ответа ML-сервиса
-        mapping_config = result.get("mapping_config", result)
+        mapping_config: dict[str, Any] = cast(
+            dict[str, Any], result.get("mapping_config", result)
+        )
         logger.info("Received mapping_config with %d keys", len(mapping_config))
         return mapping_config
 

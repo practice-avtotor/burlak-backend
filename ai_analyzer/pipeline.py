@@ -1,6 +1,7 @@
 import time
-from ai_analyzer.services import BomAnalyzer, CardsAnalyzer, MappingBuilder
+
 from ai_analyzer.schemas import LLM_MODEL
+from ai_analyzer.services import BomAnalyzer, CardsAnalyzer, MappingBuilder
 
 
 class StructurePipeline:
@@ -9,12 +10,12 @@ class StructurePipeline:
     """
 
     # Создаем объекты всех трех сервисов анализа
-    def __init__(self):
+    def __init__(self) -> None:
         self.bom_analyzer = BomAnalyzer()
         self.cards_analyzer = CardsAnalyzer()
         self.mapping_builder = MappingBuilder()
 
-    async def run(self, bom: list[dict], sample_cards: list[dict], options: dict | None = None):
+    async def run(self, bom: list[dict[str, object]], sample_cards: list[dict[str, object]], options: dict[str, object] | None = None) -> dict[str, object]:
         started = time.time()
 
         # Запускаем все сервисы анализа

@@ -1,4 +1,5 @@
 from typing import Literal
+
 from pydantic import BaseModel, Field
 
 LLM_MODEL = "qwen2.5:7B"
@@ -8,9 +9,9 @@ LLM_MODEL = "qwen2.5:7B"
 """ Запрос """
 
 class AnalyzeStructureRequest(BaseModel):
-    bom: list[dict] = Field(description="Массив представительских JSON-слепков BOM-файлов")
-    sample_cards: list[dict] = Field(description="Массив представительских JSON-слепков операционных карт")
-    options: dict | None = None
+    bom: list[dict[str, object]] = Field(description="Массив представительских JSON-слепков BOM-файлов")
+    sample_cards: list[dict[str, object]] = Field(description="Массив представительских JSON-слепков операционных карт")
+    options: dict[str, object] | None = None
 
 ########################################################
 

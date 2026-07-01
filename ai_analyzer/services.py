@@ -1,9 +1,24 @@
+from __future__ import annotations
+
 import json
-import pydantic
+from typing import Any, cast
+
 import openai
+import pydantic
+from openai.types.chat import ChatCompletionMessageParam
+
 from ai_analyzer.llm.client import client
-from ai_analyzer.llm.prompts import BOM_SYSTEM_PROMPT, CARD_SYSTEM_PROMPT, MAPPING_SYSTEM_PROMPT
-from ai_analyzer.schemas import LLM_MODEL, BomAnalysisResult, CardAnalysisResult, MappingResult
+from ai_analyzer.llm.prompts import (
+    BOM_SYSTEM_PROMPT,
+    CARD_SYSTEM_PROMPT,
+    MAPPING_SYSTEM_PROMPT,
+)
+from ai_analyzer.schemas import (
+    LLM_MODEL,
+    BomAnalysisResult,
+    CardAnalysisResult,
+    MappingResult,
+)
 
 
 class LLMAnalysisError(Exception):
@@ -11,14 +26,14 @@ class LLMAnalysisError(Exception):
     Обработка ошибок парсинга LLM
     """
 
-    def __init__(self, code: str, message: str, details: dict = None):
+    def __init__(self, code: str, message: str, details: dict[str, object] | None = None) -> None:
         self.code = code
         self.message = message
         self.details = details or {}
         super().__init__(self.message)
 
 
-async def safe_parse(model: str, messages: list, response_format):
+async def safe_parse(model: str, messages: list[ChatCompletionMessageParam], response_format: type[Any]) -> Any:
     try:
         response = client.beta.chat.completions.parse(
             model=model,
@@ -62,8 +77,8 @@ class BomAnalyzer:
     """
     MODEL = LLM_MODEL
 
-    async def analyze(self, bom_snapshots: list[dict]) -> BomAnalysisResult:
-        messages = [
+    async def analyze(self, bom_snapshots: list[dict[str, object]]) -> BomAnalysisResult:
+        messages: list[ChatCompletionMessageParam] = [
             {
                 "role": "system",
                 "content": BOM_SYSTEM_PROMPT
@@ -73,7 +88,8 @@ class BomAnalyzer:
                 "content": json.dumps(bom_snapshots, ensure_ascii=False)
             }
         ]
-        return await safe_parse(self.MODEL, messages, BomAnalysisResult)
+        result = await safe_parse(self.MODEL, messages, BomAnalysisResult)
+        return cast(BomAnalysisResult, result)
 
 
 class CardsAnalyzer:
@@ -82,8 +98,8 @@ class CardsAnalyzer:
      """
     MODEL = LLM_MODEL
 
-    async def analyze(self, cards_snapshots: list[dict]) -> CardAnalysisResult:
-        messages = [
+    async def analyze(self, cards_snapshots: list[dict[str, object]]) -> CardAnalysisResult:
+        messages: list[ChatCompletionMessageParam] = [
             {
                 "role": "system",
                 "content": CARD_SYSTEM_PROMPT
@@ -93,7 +109,8 @@ class CardsAnalyzer:
                 "content": json.dumps(cards_snapshots, ensure_ascii=False)
             }
         ]
-        return await safe_parse(self.MODEL, messages, CardAnalysisResult)
+        result = await safe_parse(self.MODEL, messages, CardAnalysisResult)
+        return cast(CardAnalysisResult, result)
 
 
 class MappingBuilder:
@@ -108,7 +125,7 @@ class MappingBuilder:
             "bom": bom_analysis.model_dump(),
             "cards": card_analysis.model_dump()
         }
-        messages = [
+        messages: list[ChatCompletionMessageParam] = [
             {
                 "role": "system",
                 "content": MAPPING_SYSTEM_PROMPT
@@ -118,4 +135,5 @@ class MappingBuilder:
                 "content": json.dumps(payload, ensure_ascii=False)
             }
         ]
-        return await safe_parse(self.MODEL, messages, MappingResult)
+        result = await safe_parse(self.MODEL, messages, MappingResult)
+        return cast(MappingResult, result)
