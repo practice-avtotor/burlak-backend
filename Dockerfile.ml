@@ -2,7 +2,8 @@ FROM python:3.12-slim-bookworm AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 WORKDIR /app
 COPY ai_analyzer/pyproject.ml.toml /app/pyproject.toml
-RUN uv sync --frozen --no-install-project --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-install-project --no-dev
 
 FROM python:3.12-slim-bookworm
 WORKDIR /app
