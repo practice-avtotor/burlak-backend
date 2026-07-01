@@ -194,72 +194,20 @@ class CardProcessingService:
                     continue
 
                 sf_card_no = extract_card_number(sf_name)
-                sf_unique_chinese_texts = {
-                    p.name for p in sf_parse_result.parts if p.name
-                }
-
-                # Translate
-                sf_translations = {}
-                if sf_unique_chinese_texts:
-                    try:
-                        if self._ml_client:
-                            sf_translations = self._ml_client.translate_batch(
-                                list(sf_unique_chinese_texts), target_lang="ru"
-                            )
-                        else:
-                            with StructureAdapter(
-                                self.settings.ml_service_url
-                            ) as ml_client:
-                                sf_translations = ml_client.translate_batch(
-                                    list(sf_unique_chinese_texts), target_lang="ru"
-                                )
-                    except Exception as e:
-                        logger.warning(
-                            f"Translation batch failed for split card {sf_name}: {e}"
-                        )
-
-                sf_parts = []
-                for p in sf_parse_result.parts:
-                    sf_parts.append(
-                        {
-                            "card_no": sf_card_no,
-                            "sheet_name": p.source_sheet,
-                            "row_index": p.row,
-                            "part_no": p.part_number,
-                            "name_cn": p.name,
-                            "name_ru": sf_translations.get(p.name, p.name),
-                            "qty": p.quantity,
-                        }
-                    )
-
-                # Save translated split workbook
                 sf_dest_xlsx_path = os.path.join(
                     translated_cards_dir, os.path.dirname(card_path), sf_name
                 )
-                os.makedirs(os.path.dirname(sf_dest_xlsx_path), exist_ok=True)
-
-                sf_name_col = parser.name_col
-                sf_wb = openpyxl.load_workbook(sf, data_only=False)
-                try:
-                    for p in sf_parse_result.parts:
-                        if p.name and sf_name_col > 0:
-                            ws = sf_wb[p.source_sheet]
-                            # Handle potential strike rows
-                            cell = ws.cell(row=p.row, column=sf_name_col)
-                            if cell.font and cell.font.strike:
-                                continue
-                            cell.value = sf_translations.get(p.name, p.name)
-                    sf_wb.save(sf_dest_xlsx_path)
-                finally:
-                    sf_wb.close()
-
-                # Save split parts list as JSON
                 sf_card_materials_path = os.path.join(
                     card_materials_dir, os.path.dirname(card_path), f"{sf_name}.json"
                 )
-                os.makedirs(os.path.dirname(sf_card_materials_path), exist_ok=True)
-                with open(sf_card_materials_path, "w", encoding="utf-8") as f:
-                    json.dump(sf_parts, f, ensure_ascii=False, indent=2)
+                self._translate_and_save_card(
+                    parts=sf_parse_result.parts,
+                    dest_path=sf_dest_xlsx_path,
+                    materials_path=sf_card_materials_path,
+                    card_bytes=sf_bytes,
+                    card_no=sf_card_no,
+                    name_col=parser.name_col,
+                )
 
                 # Cleanup temp split file
                 try:
@@ -297,61 +245,81 @@ class CardProcessingService:
                 )
             else:
                 # Single card — original logic
-                unique_chinese_texts = {p.name for p in parse_result.parts if p.name}
+                self._translate_and_save_card(
+                    parts=parse_result.parts,
+                    dest_path=dest_xlsx_path,
+                    materials_path=card_materials_path,
+                    card_bytes=card_bytes,
+                    card_no=card_no,
+                    name_col=parser.name_col,
+                )
 
-                # Translate Chinese names
-                translations = {}
-                if unique_chinese_texts:
-                    try:
-                        if self._ml_client:
-                            translations = self._ml_client.translate_batch(
-                                list(unique_chinese_texts), target_lang="ru"
-                            )
-                        else:
-                            with StructureAdapter(
-                                self.settings.ml_service_url
-                            ) as ml_client:
-                                translations = ml_client.translate_batch(
-                                    list(unique_chinese_texts), target_lang="ru"
-                                )
-                    except Exception as e:
-                        logger.warning(
-                            f"Translation batch failed for {card_path}: {e}. Falling back to original texts."
-                        )
+    def _translate_and_save_card(
+        self,
+        parts: list[ParsedPart],
+        dest_path: str,
+        materials_path: str,
+        card_bytes: bytes,
+        card_no: str,
+        name_col: int,
+    ) -> None:
+        """Translate Chinese names, save translated workbook, and write materials JSON.
 
-                # Apply style-preserving updates and update parts
-                parts = []
-                for p in parse_result.parts:
-                    parts.append(
-                        {
-                            "card_no": card_no,
-                            "sheet_name": p.source_sheet,
-                            "row_index": p.row,
-                            "part_no": p.part_number,
-                            "name_cn": p.name,
-                            "name_ru": translations.get(p.name, p.name),
-                            "qty": p.quantity,
-                        }
+        Shared helper used by split-file, single-card, and multi-card paths.
+        """
+        unique_texts = {p.name for p in parts if p.name}
+        translations: dict[str, str] = {}
+        if unique_texts:
+            try:
+                if self._ml_client:
+                    translations = self._ml_client.translate_batch(
+                        list(unique_texts), target_lang="ru"
                     )
+                else:
+                    with StructureAdapter(
+                        self.settings.ml_service_url
+                    ) as ml_client:
+                        translations = ml_client.translate_batch(
+                            list(unique_texts), target_lang="ru"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Translation batch failed: {e}. Using original text."
+                )
 
-                # Save translated workbook
-                name_col = parser.name_col
-                wb = openpyxl.load_workbook(io.BytesIO(card_bytes), data_only=False)
-                try:
-                    for p in parse_result.parts:
-                        if p.name and name_col > 0:
-                            ws = wb[p.source_sheet]
-                            cell = ws.cell(row=p.row, column=name_col)
-                            if cell.font and cell.font.strike:
-                                continue
-                            cell.value = translations.get(p.name, p.name)
-                    wb.save(dest_xlsx_path)
-                finally:
-                    wb.close()
+        # Build parts list for materials JSON
+        json_parts = [
+            {
+                "card_no": card_no,
+                "sheet_name": p.source_sheet,
+                "row_index": p.row,
+                "part_no": p.part_number,
+                "name_cn": p.name,
+                "name_ru": translations.get(p.name, p.name),
+                "qty": p.quantity,
+            }
+            for p in parts
+        ]
 
-                # Save parts list as JSON
-                with open(card_materials_path, "w", encoding="utf-8") as f:
-                    json.dump(parts, f, ensure_ascii=False, indent=2)
+        # Save translated workbook
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        wb = openpyxl.load_workbook(io.BytesIO(card_bytes), data_only=False)
+        try:
+            for p in parts:
+                if p.name and name_col > 0:
+                    ws = wb[p.source_sheet]
+                    cell = ws.cell(row=p.row, column=name_col)
+                    if cell.font and cell.font.strike:
+                        continue
+                    cell.value = translations.get(p.name, p.name)
+            wb.save(dest_path)
+        finally:
+            wb.close()
+
+        # Save parts list as JSON
+        os.makedirs(os.path.dirname(materials_path), exist_ok=True)
+        with open(materials_path, "w", encoding="utf-8") as f:
+            json.dump(json_parts, f, ensure_ascii=False, indent=2)
 
     def write_error_file(self, card_path: str, exc: Exception) -> None:
         """Write error materials file containing exception detail."""
@@ -405,13 +373,6 @@ class CardProcessingService:
                 if p.source_sheet == sheet_name and start_row <= p.row <= end_row:
                     sub_card_parts[idx].append(p)
                     break
-            else:
-                # Part doesn't fall into any boundary — assign to the last card
-                logger.warning(
-                    "Part row %d (sheet '%s') not in any card boundary, assigning to last card",
-                    p.row, p.source_sheet,
-                )
-                sub_card_parts[-1].append(p)
 
         for idx, parts_group in enumerate(sub_card_parts):
             if not parts_group:
@@ -428,70 +389,19 @@ class CardProcessingService:
                 idx + 1, len(card_boundaries), sub_name, len(parts_group),
             )
 
-            # Collect unique Chinese texts for this sub-card
-            sub_unique_texts = {p.name for p in parts_group if p.name}
-
-            # Translate
-            sub_translations: dict[str, str] = {}
-            if sub_unique_texts:
-                try:
-                    if self._ml_client:
-                        sub_translations = self._ml_client.translate_batch(
-                            list(sub_unique_texts), target_lang="ru"
-                        )
-                    else:
-                        with StructureAdapter(
-                            self.settings.ml_service_url
-                        ) as ml_client:
-                            sub_translations = ml_client.translate_batch(
-                                list(sub_unique_texts), target_lang="ru"
-                            )
-                except Exception as e:
-                    logger.warning(
-                        f"Translation batch failed for sub-card {sub_name}: {e}. "
-                        "Falling back to original texts."
-                    )
-
-            # Build parts list for materials JSON
-            sub_parts = []
-            for p in parts_group:
-                sub_parts.append(
-                    {
-                        "card_no": sub_card_no,
-                        "sheet_name": p.source_sheet,
-                        "row_index": p.row,
-                        "part_no": p.part_number,
-                        "name_cn": p.name,
-                        "name_ru": sub_translations.get(p.name, p.name),
-                        "qty": p.quantity,
-                    }
-                )
-
-            # Save translated workbook for this sub-card
             sub_dest_xlsx_path = os.path.join(
                 translated_cards_dir, os.path.dirname(card_path), sub_name
             )
-            os.makedirs(os.path.dirname(sub_dest_xlsx_path), exist_ok=True)
-
-            wb = openpyxl.load_workbook(io.BytesIO(card_bytes), data_only=False)
-            try:
-                for p in parts_group:
-                    if p.name and name_col > 0:
-                        ws = wb[p.source_sheet]
-                        cell = ws.cell(row=p.row, column=name_col)
-                        if cell.font and cell.font.strike:
-                            continue
-                        cell.value = sub_translations.get(p.name, p.name)
-                wb.save(sub_dest_xlsx_path)
-            finally:
-                wb.close()
-
-            # Save parts list as JSON for this sub-card
             sub_card_materials_path = os.path.join(
                 card_materials_dir,
                 os.path.dirname(card_path),
                 f"{sub_name}.json",
             )
-            os.makedirs(os.path.dirname(sub_card_materials_path), exist_ok=True)
-            with open(sub_card_materials_path, "w", encoding="utf-8") as f:
-                json.dump(sub_parts, f, ensure_ascii=False, indent=2)
+            self._translate_and_save_card(
+                parts=parts_group,
+                dest_path=sub_dest_xlsx_path,
+                materials_path=sub_card_materials_path,
+                card_bytes=card_bytes,
+                card_no=sub_card_no,
+                name_col=name_col,
+            )

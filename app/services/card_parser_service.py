@@ -202,11 +202,17 @@ class CardParserService:
         # New format: cards.formats.card_format_A.sheets[0].{columns, table_boundaries}
         # Old format: cards.{columns, table_boundaries}
         formats = cards_cfg.get("formats")
-        if formats and isinstance(formats, dict):
-            # New format detected — extract from the first matching format
-            tb, columns = self._adapt_nested_format(cards_cfg)
+        if isinstance(formats, dict):
+            tb, columns = {}, {}
+            for fmt in formats.values():
+                sheets = fmt.get("sheets", [])
+                if sheets:
+                    tb = sheets[0].get("table_boundaries", {})
+                    columns = sheets[0].get("columns", {})
+                    if not tb.get("end_markers") and fmt.get("end_markers"):
+                        tb["end_markers"] = fmt["end_markers"]
+                    break
         else:
-            # Old flat format
             tb = cards_cfg.get("table_boundaries", {})
             columns = cards_cfg.get("columns", {})
 
@@ -233,45 +239,16 @@ class CardParserService:
         if "name_cn" in self._columns and "name" not in self._columns:
             self._columns["name"] = self._columns["name_cn"]
 
+        # Plain attribute for name column index (used by card_processing_service)
+        val = self._columns.get("name", 0)
+        self.name_col: int = int(val) if val else 0
+
         self._sheets_cfg: dict[str, Any] = cards_cfg.get("sheets", {})
 
         # Multi-card configuration (from table_boundaries.multi_card)
         self._multi_card_cfg: dict[str, Any] | None = tb.get("multi_card")
         self._is_multi_card = tb.get("type") == "multi_card" and bool(self._multi_card_cfg)
         self._last_card_boundaries: list[tuple[str, int, int]] | None = None
-
-    @staticmethod
-    def _adapt_nested_format(
-        cards_cfg: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Extract flat ``table_boundaries`` and ``columns`` from the new nested
-        ``cards.formats`` structure.
-
-        Returns:
-            Tuple of (table_boundaries, columns) extracted from the first
-            sheet of the first matching format.
-        """
-        formats: dict[str, Any] = cards_cfg.get("formats", {})
-        # Pick the first format that has sheets
-        for fmt_name, fmt_body in formats.items():
-            sheets = fmt_body.get("sheets", [])
-            if sheets:
-                sheet0 = sheets[0]
-                tb = sheet0.get("table_boundaries", {})
-                cols = sheet0.get("columns", {})
-                # Merge end_markers from format-level if not on sheet level
-                if not tb.get("end_markers"):
-                    fmt_end = fmt_body.get("end_markers")
-                    if fmt_end:
-                        tb["end_markers"] = fmt_end
-                return tb, cols
-        return {}, {}
-
-    @property
-    def name_col(self) -> int:
-        """The 1-based column index for the name field (adapted from any format)."""
-        val = self._columns.get("name", 0)
-        return int(val) if val else 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -706,21 +683,14 @@ class CardParserService:
 
         Returns ``True`` if both ``col1`` and ``col2`` are ``None`` or blank.
         """
-        v1 = None
-        try:
-            v1 = ws.cell(row=row, column=col1).value
-        except Exception:
-            pass
+        v1 = CardParserService._cell_value(ws, row, col1)
         if v1 is not None and str(v1).strip():
             return False
 
         if col2 > 0 and col2 != col1:
-            try:
-                v2 = ws.cell(row=row, column=col2).value
-                if v2 is not None and str(v2).strip():
-                    return False
-            except Exception:
-                pass
+            v2 = CardParserService._cell_value(ws, row, col2)
+            if v2 is not None and str(v2).strip():
+                return False
 
         return True
 
@@ -743,11 +713,7 @@ class CardParserService:
         consecutive_empty = 0
 
         for row_idx in range(start_row, max_row + 1):
-            raw_pn = None
-            try:
-                raw_pn = ws.cell(row=row_idx, column=part_no_col).value
-            except Exception:
-                pass
+            raw_pn = CardParserService._cell_value(ws, row_idx, part_no_col)
 
             # Check end markers in part_no column
             if raw_pn is not None:
@@ -757,33 +723,14 @@ class CardParserService:
 
             # Check end markers in name column
             if name_col > 0 and name_col != part_no_col:
-                try:
-                    raw_name = ws.cell(row=row_idx, column=name_col).value
-                    if raw_name is not None:
-                        name_str = str(raw_name).strip()
-                        if any(marker in name_str for marker in end_markers):
-                            return row_idx - 1
-                except Exception:
-                    pass
+                raw_name = CardParserService._cell_value(ws, row_idx, name_col)
+                if raw_name is not None:
+                    name_str = str(raw_name).strip()
+                    if any(marker in name_str for marker in end_markers):
+                        return row_idx - 1
 
             # Count consecutive empty rows
-            is_empty = True
-            try:
-                v = ws.cell(row=row_idx, column=part_no_col).value
-                if v is not None and str(v).strip():
-                    is_empty = False
-            except Exception:
-                pass
-
-            if is_empty and name_col > 0 and name_col != part_no_col:
-                try:
-                    v = ws.cell(row=row_idx, column=name_col).value
-                    if v is not None and str(v).strip():
-                        is_empty = False
-                except Exception:
-                    pass
-
-            if is_empty:
+            if CardParserService._is_row_empty(ws, row_idx, part_no_col, name_col):
                 consecutive_empty += 1
                 if consecutive_empty >= empty_rows_sep:
                     return row_idx - empty_rows_sep
