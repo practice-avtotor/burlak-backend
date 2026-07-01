@@ -437,7 +437,9 @@ class CardParserService:
                 )
                 # Store boundaries on the instance so _parse_operational_card
                 # can read them when building MLCardParseResult
-                self._last_card_boundaries = boundaries
+                if self._last_card_boundaries is None:
+                    self._last_card_boundaries = []
+                self._last_card_boundaries.extend(boundaries)
                 return parts
 
         sheet_parts: list[ParsedPart] = []
