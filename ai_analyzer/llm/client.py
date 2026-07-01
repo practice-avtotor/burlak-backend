@@ -1,7 +1,6 @@
+import os
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama"
-)
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
+client = OpenAI(base_url=OLLAMA_URL, api_key="ollama")
 
