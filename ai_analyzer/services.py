@@ -62,23 +62,17 @@ class BomAnalyzer:
     """
     MODEL = LLM_MODEL
 
-    async def analyze(self, bom_snapshot: dict) -> BomAnalysisResult:
-
-        # Контекст беседы с нейросетью
-        messages=[
+    async def analyze(self, bom_snapshots: list[dict]) -> BomAnalysisResult:
+        messages = [
             {
                 "role": "system",
                 "content": BOM_SYSTEM_PROMPT
             },
             {
                 "role": "user",
-                "content": json.dumps(
-                    bom_snapshot,
-                    ensure_ascii=False
-                )
+                "content": json.dumps(bom_snapshots, ensure_ascii=False)
             }
         ]
-
         return await safe_parse(self.MODEL, messages, BomAnalysisResult)
 
 
@@ -88,23 +82,17 @@ class CardsAnalyzer:
      """
     MODEL = LLM_MODEL
 
-    async def analyze(self, cards: list[dict]) -> CardAnalysisResult:
-
-        # Контекст беседы с нейросетью
-        messages=[
+    async def analyze(self, cards_snapshots: list[dict]) -> CardAnalysisResult:
+        messages = [
             {
                 "role": "system",
                 "content": CARD_SYSTEM_PROMPT
             },
             {
                 "role": "user",
-                "content": json.dumps(
-                    cards,
-                    ensure_ascii=False
-                )
+                "content": json.dumps(cards_snapshots, ensure_ascii=False)
             }
         ]
-
         return await safe_parse(self.MODEL, messages, CardAnalysisResult)
 
 
@@ -115,27 +103,19 @@ class MappingBuilder:
     MODEL = LLM_MODEL
 
     # Принимаем результаты предыдущего анализа
-    async def build(self, bom_analysis, card_analysis) -> MappingResult:
-
-        # Превращаем Pydantic обратно в словари для json.dumps()
+    async def build(self, bom_analysis: BomAnalysisResult, card_analysis: CardAnalysisResult) -> MappingResult:
         payload = {
             "bom": bom_analysis.model_dump(),
             "cards": card_analysis.model_dump()
         }
-
-        # Контекст беседы с нейросетью
-        messages=[
+        messages = [
             {
                 "role": "system",
                 "content": MAPPING_SYSTEM_PROMPT
             },
             {
                 "role": "user",
-                "content": json.dumps(
-                    payload,
-                    ensure_ascii=False
-                )
+                "content": json.dumps(payload, ensure_ascii=False)
             }
         ]
-
         return await safe_parse(self.MODEL, messages, MappingResult)
