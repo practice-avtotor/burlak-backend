@@ -26,19 +26,21 @@ class LLMAnalysisError(Exception):
     Обработка ошибок парсинга LLM
     """
 
-    def __init__(self, code: str, message: str, details: dict[str, object] | None = None) -> None:
+    def __init__(
+        self, code: str, message: str, details: dict[str, object] | None = None
+    ) -> None:
         self.code = code
         self.message = message
         self.details = details or {}
         super().__init__(self.message)
 
 
-async def safe_parse(model: str, messages: list[ChatCompletionMessageParam], response_format: type[Any]) -> Any:
+async def safe_parse(
+    model: str, messages: list[ChatCompletionMessageParam], response_format: type[Any]
+) -> Any:
     try:
         response = client.beta.chat.completions.parse(
-            model=model,
-            messages=messages,
-            response_format=response_format
+            model=model, messages=messages, response_format=response_format
         )
         return response.choices[0].message.parsed
 
@@ -47,7 +49,7 @@ async def safe_parse(model: str, messages: list[ChatCompletionMessageParam], res
         raise LLMAnalysisError(
             code="INVALID_MODEL_OUTPUT",
             message="LLM вернула данные, не соответствующие Pydantic-схеме",
-            details={"validation_errors": e.errors()}
+            details={"validation_errors": e.errors()},
         )
     except openai.LengthFinishReasonError:
         # Модели не хватило max_tokens, чтобы закрыть JSON
@@ -60,14 +62,14 @@ async def safe_parse(model: str, messages: list[ChatCompletionMessageParam], res
         raise LLMAnalysisError(
             code="LLM_API_ERROR",
             message="Ошибка соединения с LLM",
-            details={"error": str(e)}
+            details={"error": str(e)},
         )
     except Exception as e:
         # Любые другие непредвиденные сбои
         raise LLMAnalysisError(
             code="INTERNAL_ERROR",
             message="Неизвестная ошибка при анализе",
-            details={"error": str(e)}
+            details={"error": str(e)},
         )
 
 
@@ -75,18 +77,15 @@ class BomAnalyzer:
     """
     Разбор BOM файла
     """
+
     MODEL = LLM_MODEL
 
-    async def analyze(self, bom_snapshots: list[dict[str, object]]) -> BomAnalysisResult:
+    async def analyze(
+        self, bom_snapshots: list[dict[str, object]]
+    ) -> BomAnalysisResult:
         messages: list[ChatCompletionMessageParam] = [
-            {
-                "role": "system",
-                "content": BOM_SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": json.dumps(bom_snapshots, ensure_ascii=False)
-            }
+            {"role": "system", "content": BOM_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(bom_snapshots, ensure_ascii=False)},
         ]
         result = await safe_parse(self.MODEL, messages, BomAnalysisResult)
         return cast(BomAnalysisResult, result)
@@ -95,19 +94,19 @@ class BomAnalyzer:
 class CardsAnalyzer:
     """
     Разбор операционной карты
-     """
+    """
+
     MODEL = LLM_MODEL
 
-    async def analyze(self, cards_snapshots: list[dict[str, object]]) -> CardAnalysisResult:
+    async def analyze(
+        self, cards_snapshots: list[dict[str, object]]
+    ) -> CardAnalysisResult:
         messages: list[ChatCompletionMessageParam] = [
-            {
-                "role": "system",
-                "content": CARD_SYSTEM_PROMPT
-            },
+            {"role": "system", "content": CARD_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": json.dumps(cards_snapshots, ensure_ascii=False)
-            }
+                "content": json.dumps(cards_snapshots, ensure_ascii=False),
+            },
         ]
         result = await safe_parse(self.MODEL, messages, CardAnalysisResult)
         return cast(CardAnalysisResult, result)
@@ -117,23 +116,20 @@ class MappingBuilder:
     """
     Маппинг
     """
+
     MODEL = LLM_MODEL
 
     # Принимаем результаты предыдущего анализа
-    async def build(self, bom_analysis: BomAnalysisResult, card_analysis: CardAnalysisResult) -> MappingResult:
+    async def build(
+        self, bom_analysis: BomAnalysisResult, card_analysis: CardAnalysisResult
+    ) -> MappingResult:
         payload = {
             "bom": bom_analysis.model_dump(),
-            "cards": card_analysis.model_dump()
+            "cards": card_analysis.model_dump(),
         }
         messages: list[ChatCompletionMessageParam] = [
-            {
-                "role": "system",
-                "content": MAPPING_SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False)
-            }
+            {"role": "system", "content": MAPPING_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
         result = await safe_parse(self.MODEL, messages, MappingResult)
         return cast(MappingResult, result)

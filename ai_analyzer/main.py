@@ -8,9 +8,12 @@ from ai_analyzer.services import LLMAnalysisError
 
 app = FastAPI(title="ML Structure Analysis Service")
 
+
 # Перехват ошибок валидации FastAPI
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     return JSONResponse(
         status_code=422,
         content={
@@ -18,15 +21,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "error": {
                 "code": "INVALID_INPUT",
                 "message": "Неверный формат запроса",
-                "detail": {"validation_errors": exc.errors()}
-            }
-        }
+                "detail": {"validation_errors": exc.errors()},
+            },
+        },
     )
+
 
 # Регистрируем глобальный обработчик ошибки
 @app.exception_handler(LLMAnalysisError)
-async def llm_analysis_error_handler(request: Request, exc: LLMAnalysisError) -> JSONResponse:
-    contract_code = "TIMEOUT" if "timeout" in str(exc.details).lower() else "ANALYSIS_FAILED"
+async def llm_analysis_error_handler(
+    request: Request, exc: LLMAnalysisError
+) -> JSONResponse:
+    contract_code = (
+        "TIMEOUT" if "timeout" in str(exc.details).lower() else "ANALYSIS_FAILED"
+    )
     status_code = 504 if contract_code == "TIMEOUT" else 500
 
     return JSONResponse(
@@ -36,10 +44,11 @@ async def llm_analysis_error_handler(request: Request, exc: LLMAnalysisError) ->
             "error": {
                 "code": contract_code,
                 "message": exc.message,
-                "detail": exc.details
-            }
-        }
+                "detail": exc.details,
+            },
+        },
     )
+
 
 # Валидация JSON в AnalyzeStructureRequest происходит автоматически
 @app.post("/api/v1/analyze-structure")
@@ -48,6 +57,6 @@ async def analyze_structure(request: AnalyzeStructureRequest) -> dict[str, objec
     result = await pipeline.run(
         bom=request.bom,
         sample_cards=request.sample_cards,
-        options=request.options  # <-- добавить
+        options=request.options,  # <-- добавить
     )
     return result

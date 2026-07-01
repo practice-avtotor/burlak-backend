@@ -15,7 +15,12 @@ class StructurePipeline:
         self.cards_analyzer = CardsAnalyzer()
         self.mapping_builder = MappingBuilder()
 
-    async def run(self, bom: list[dict[str, object]], sample_cards: list[dict[str, object]], options: dict[str, object] | None = None) -> dict[str, object]:
+    async def run(
+        self,
+        bom: list[dict[str, object]],
+        sample_cards: list[dict[str, object]],
+        options: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         started = time.time()
 
         # Запускаем все сервисы анализа
@@ -34,7 +39,7 @@ class StructurePipeline:
                     "analyzer_version": "1.0.0",
                     "processing_time_ms": int((time.time() - started) * 1000),
                     "model": LLM_MODEL,
-                    "warnings": []
-                }
-            }
+                    "warnings": [],
+                },
+            },
         }
