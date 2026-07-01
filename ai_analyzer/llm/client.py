@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "ollama")
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120.0"))
 
 _client: AsyncOpenAI | None = None
 
@@ -28,10 +29,15 @@ def get_client() -> AsyncOpenAI:
     """
     global _client
     if _client is None:
-        logger.info("Creating AsyncOpenAI client: base_url=%s", OLLAMA_URL)
+        logger.info(
+            "Creating AsyncOpenAI client: base_url=%s, timeout=%s",
+            OLLAMA_URL,
+            LLM_TIMEOUT,
+        )
         _client = AsyncOpenAI(
             base_url=OLLAMA_URL,
             api_key=OLLAMA_API_KEY,
+            timeout=LLM_TIMEOUT,
         )
     return _client
 

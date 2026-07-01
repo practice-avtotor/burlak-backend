@@ -16,11 +16,14 @@ from ai_analyzer.services import LLMAnalysisError
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: verify LLM connectivity on startup, close client on shutdown."""
-    # Startup: verify the LLM client can be created
+    # Startup: verify the LLM client can reach Ollama
+    client = get_client()
     try:
-        get_client()
+        await client.models.list()
     except Exception as exc:
-        raise RuntimeError(f"Failed to initialise LLM client: {exc}") from exc
+        raise RuntimeError(
+            f"LLM service (Ollama) is not reachable: {exc}"
+        ) from exc
     yield
     # Shutdown: close the HTTP client session gracefully
     await close_client()
@@ -37,8 +40,13 @@ app = FastAPI(title="ML Structure Analysis Service", lifespan=lifespan)
 @app.get("/health")
 @app.get("/api/v1/health")
 async def health() -> dict[str, object]:
-    """Liveness probe for container orchestration."""
-    return {"status": "healthy", "service": "ai_analyzer"}
+    """Liveness probe that also verifies LLM connectivity."""
+    client = get_client()
+    try:
+        await client.models.list()
+        return {"status": "healthy", "service": "ai_analyzer", "llm": "connected"}
+    except Exception:
+        return {"status": "degraded", "service": "ai_analyzer", "llm": "unreachable"}
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +65,7 @@ async def validation_exception_handler(
             "status": "error",
             "error": {
                 "code": "INVALID_INPUT",
-                "message": "Неверный формат запроса",
+                "message": "Invalid request format",
                 "detail": {"validation_errors": exc.errors()},
             },
         },
@@ -69,17 +77,21 @@ async def validation_exception_handler(
 async def llm_analysis_error_handler(
     request: Request, exc: LLMAnalysisError
 ) -> JSONResponse:
-    contract_code = (
-        "TIMEOUT" if "timeout" in str(exc.details).lower() else "ANALYSIS_FAILED"
-    )
-    status_code = 504 if contract_code == "TIMEOUT" else 500
+    # Map specific error codes to HTTP status codes
+    status_code: int
+    if exc.code in ("INCOMPLETE_OUTPUT", "LLM_API_ERROR"):
+        status_code = 504
+    elif exc.code in ("INVALID_MODEL_OUTPUT", "INVALID_JSON", "EMPTY_RESPONSE", "EMPTY_CONTENT"):
+        status_code = 422
+    else:
+        status_code = 500
 
     return JSONResponse(
         status_code=status_code,
         content={
             "status": "error",
             "error": {
-                "code": contract_code,
+                "code": exc.code,
                 "message": exc.message,
                 "detail": exc.details,
             },
