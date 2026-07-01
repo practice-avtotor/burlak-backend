@@ -19,6 +19,8 @@ services:
     command: uvicorn app.core.ml_stub:app --host 0.0.0.0 --port 5000
     ports:
       - "5000:5000"
+    profiles:
+      - mock
     restart: unless-stopped
 
   ml-service:
@@ -30,9 +32,12 @@ services:
       - "8001:8000"
     environment:
       OLLAMA_URL: http://ollama:11434/v1
+      OLLAMA_API_KEY: ollama
+      LLM_MODEL: qwen2.5:7B
+      LLM_TIMEOUT: "120"
     depends_on:
       ollama:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   ollama:
@@ -42,6 +47,12 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   web:
@@ -61,7 +72,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      ml-mock:
+      ml-service:
         condition: service_started
     restart: unless-stopped
 
@@ -81,7 +92,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      ml-mock:
+      ml-service:
         condition: service_started
     restart: unless-stopped
 
