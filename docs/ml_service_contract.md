@@ -21,17 +21,17 @@
 
 Бэкенд открывает Excel-файл через `openpyxl` (как в старом парсере) и извлекает:
 - Имена всех листов
-- Для каждого листа — первые 40–50 строк (сырые значения ячеек)
+- Для каждого листа — первые 300 строк (сырые значения ячеек)
 - Мета-информацию: количество строк, количество колонок
 
-**Важно (группировка по форматам):** Бэкенд ищет **все** BOM-файлы (шаблон `BOM*.xlsx`) и **все** операционные карты в архиве, группирует их по формату (например, по шаблону/маске имени файла) и отправляет **representative-слепки каждого уникального формата** в ML-сервис. Это позволяет ML-сервису точно знать все варианты структуры, которые встречаются в задаче. Размер слепка — **40–50 строк** с каждого листа.
+**Важно (группировка по форматам):** Бэкенд ищет **все** BOM-файлы (шаблон `BOM*.xlsx`) и **все** операционные карты в архиве, группирует их по формату (например, по шаблону/маске имени файла) и отправляет **representative-слепки каждого уникального формата** в ML-сервис. Это позволяет ML-сервису точно знать все варианты структуры, которые встречаются в задаче. Размер слепка — **300 строк** с каждого листа.
 
 ### 2.2. Пример реализации (новый `excel_service.py`)
 
 ```python
 import openpyxl
 
-def extract_snapshot(file_path: str, max_rows: int = 50) -> dict:
+def extract_snapshot(file_path: str, max_rows: int = 300) -> dict:
     """
     Извлечь JSON-слепок Excel-файла для отправки в ML-сервис.
     
@@ -117,7 +117,7 @@ Content-Type: application/json
 
 ### 3.2. Запрос (Request)
 
-**Важно:** `bom` и `sample_cards` — это массивы. Бэкенд группирует все BOM-файлы и все операционные карты по форматам и отправляет representative-слепок каждого уникального формата. Размер слепка — 40–50 строк с каждого листа.
+**Важно:** `bom` и `sample_cards` — это массивы. Бэкенд группирует все BOM-файлы и все операционные карты по форматам и отправляет representative-слепок каждого уникального формата. Размер слепка — 300 строк с каждого листа.
 
 ```json
 {
@@ -185,7 +185,7 @@ Content-Type: application/json
       "sheets": [
         {
           "sheet_name": "Sheet1",
-          "total_rows": 50,
+          "total_rows": 300,
           "total_cols": 10,
           "rows": [
             ["序号", "零件号", "名称", "数量", "备注"],
@@ -222,7 +222,7 @@ Content-Type: application/json
     }
   ],
   "options": {
-    "max_sample_rows": 50,
+    "max_sample_rows": 300,
     "total_cards_in_archive": 1000,
     "language_hint": "zh-CN"
   }
@@ -390,8 +390,8 @@ ML-сервис возвращает `mapping_config` — полное опис�
                   "separator_type": "empty_row",
                   "empty_rows_separator": 1,
                   "has_repeating_header": true,
-                  "parts_header_row": 21,
-                  "parts_data_start_row": 22,
+                  "parts_header_row": 1,
+                  "parts_data_start_row": 2,
                   "max_cards": 0
                 }
               }
@@ -476,12 +476,12 @@ ML-сервис возвращает `mapping_config` — полное опис�
 
 ```python
 def analyze_mapping(job_id):
-    # 1. Ищем все BOM-файлы, группируем по формату, делаем JSON-слепки (40-50 строк)
+    # 1. Ищем все BOM-файлы, группируем по формату, делаем JSON-слепки (300 строк)
     bom_paths = get_all_bom_paths(job_id)  # все BOM*.xlsx
     bom_groups = group_by_format(bom_paths)  # группировка по шаблону имени
     bom_snapshots = []
     for group_name, paths in bom_groups.items():
-        snapshot = extract_snapshot(paths[0], max_rows=50)  # representative
+        snapshot = extract_snapshot(paths[0], max_rows=300)  # representative
         snapshot["format_group"] = group_name
         bom_snapshots.append(snapshot)
     
@@ -493,7 +493,7 @@ def analyze_mapping(job_id):
     for group_name, paths in card_groups.items():
         card_data = read_card_from_zip(job_id, paths[0])
         snapshot = SnapshotService.extract_snapshot_from_bytes(
-            card_data, os.path.basename(paths[0]), max_rows=50
+            card_data, os.path.basename(paths[0]), max_rows=300
         )
         snapshot["format_group"] = group_name
         card_snapshots.append(snapshot)
@@ -506,7 +506,7 @@ def analyze_mapping(job_id):
                 "bom": bom_snapshots,
                 "sample_cards": card_snapshots,
                 "options": {
-                    "max_sample_rows": 50,
+                    "max_sample_rows": 300,
                     "total_cards_in_archive": len(all_card_paths)
                 }
             }
@@ -852,19 +852,19 @@ interface FieldMapping {
 
 Сервис для извлечения JSON-слепков из Excel-файлов через openpyxl.
 
-**Группировка по форматам:** Бэкенд ищет все BOM-файлы (`BOM*.xlsx`) и все операционные карты в ZIP-архиве, группирует их по формату (по шаблону/маске имени файла) и вызывает `extract_snapshot` для representative-файла каждой группы. Размер слепка — 40–50 строк с каждого листа.
+**Группировка по форматам:** Бэкенд ищет все BOM-файлы (`BOM*.xlsx`) и все операционные карты в ZIP-архиве, группирует их по формату (по шаблону/маске имени файла) и вызывает `extract_snapshot` для representative-файла каждой группы. Размер слепка — 300 строк с каждого листа.
 
 ```python
 class SnapshotService:
     """Извлекает JSON-слепки из Excel-файлов для отправки в ML-сервис."""
     
     @staticmethod
-    def extract_snapshot(file_path: str, max_rows: int = 50) -> dict:
+    def extract_snapshot(file_path: str, max_rows: int = 300) -> dict:
         """Открыть .xlsx через openpyxl, извлечь первые N строк каждого листа."""
         ...
     
     @staticmethod
-    def extract_snapshot_from_bytes(data: bytes, filename: str, max_rows: int = 50) -> dict:
+    def extract_snapshot_from_bytes(data: bytes, filename: str, max_rows: int = 300) -> dict:
         """То же самое, но из байтового потока (для карт из ZIP)."""
         ...
     
@@ -901,7 +901,7 @@ class StructureAdapter:
 
 - Использовать `SnapshotService` для извлечения JSON-слепков
 - **Группировать BOM-файлы и операционные карты по форматам** перед отправкой в ML
-- **Размер слепка — 40–50 строк** с каждого листа (параметр `max_rows=50`)
+- **Размер слепка — 300 строк** с каждого листа (параметр `max_rows=300`)
 - Использовать `StructureAdapter` для вызова ML
 - Graceful degradation: ошибка ML → статус `error`
 - Сохранять mapping_config через `repository.update_mapping_config()`
@@ -942,14 +942,14 @@ sequenceDiagram
     
     W->>SS: find all BOM*.xlsx files
     W->>W: group BOMs by format
-    W->>W: extract JSON snapshot (50 rows) for each format
+    W->>W: extract JSON snapshot (300 rows) for each format
     
     W->>SS: find all operational cards in ZIP
     W->>W: group cards by format
-    W->>W: extract JSON snapshot (50 rows) for each format
+    W->>W: extract JSON snapshot (300 rows) for each format
     
     W->>ML: POST /api/v1/analyze-structure
-    Note over W,ML: JSON snapshots of all BOM formats + all card formats (50 rows each)
+    Note over W,ML: JSON snapshots of all BOM formats + all card formats (300 rows each)
     
     alt ML available
         ML-->>W: 200 OK + mapping_config
