@@ -1,8 +1,9 @@
+import os
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-LLM_MODEL = "qwen2.5:7B"
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7B")
 
 ########################################################
 
@@ -51,18 +52,9 @@ class BomColumns(BaseModel):
     )
 
 
-class BomBlock(BaseModel):
-    part_no_col: int
-    name_col: int
-    qty_col: int
-    start_col: int
-    end_col: int
-
-
 class BomLayout(BaseModel):
     type: Literal["single_table", "multi_block", "service_sheet"]
     description: str
-    blocks: list[BomBlock] | None = None
 
 
 class BomSheet(BaseModel):

@@ -1,12 +1,48 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from ai_analyzer.llm.client import close_client, get_client
 from ai_analyzer.pipeline import StructurePipeline
 from ai_analyzer.schemas import AnalyzeStructureRequest
 from ai_analyzer.services import LLMAnalysisError
 
-app = FastAPI(title="ML Structure Analysis Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: verify LLM connectivity on startup, close client on shutdown."""
+    # Startup: verify the LLM client can be created
+    try:
+        get_client()
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialise LLM client: {exc}") from exc
+    yield
+    # Shutdown: close the HTTP client session gracefully
+    await close_client()
+
+
+app = FastAPI(title="ML Structure Analysis Service", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+
+@app.get("/health")
+@app.get("/api/v1/health")
+async def health() -> dict[str, object]:
+    """Liveness probe for container orchestration."""
+    return {"status": "healthy", "service": "ai_analyzer"}
+
+
+# ---------------------------------------------------------------------------
+# Error handlers
+# ---------------------------------------------------------------------------
 
 
 # Перехват ошибок валидации FastAPI
@@ -48,6 +84,11 @@ async def llm_analysis_error_handler(
             },
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 
 # Валидация JSON в AnalyzeStructureRequest происходит автоматически
