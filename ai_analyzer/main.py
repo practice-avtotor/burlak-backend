@@ -57,6 +57,6 @@ async def analyze_structure(request: AnalyzeStructureRequest) -> dict[str, objec
     result = await pipeline.run(
         bom=request.bom,
         sample_cards=request.sample_cards,
-        options=request.options,  # <-- добавить
+        options=request.options,
     )
     return result
