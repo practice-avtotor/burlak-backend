@@ -13,6 +13,10 @@ from app.schemas.job import ErrorDetail, ErrorResponse
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown events."""
     from app.core.redis import close_redis, get_redis
+    from app.db.database import init_db
+
+    # Startup: initialize database tables
+    init_db()
 
     # Startup: initialize Redis connection pool
     await get_redis()
