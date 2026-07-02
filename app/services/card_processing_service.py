@@ -144,9 +144,7 @@ class CardProcessingService:
         sheets_to_split = []
         for sn in sheet_names:
             sn_lower = sn.lower()
-            is_svc_sheet = any(
-                kw.lower() in sn_lower for kw in parser.service_keywords
-            )
+            is_svc_sheet = any(kw.lower() in sn_lower for kw in parser.service_keywords)
             if not is_svc_sheet:
                 sheets_to_split.append(sn)
 

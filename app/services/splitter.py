@@ -36,110 +36,65 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class ExcelSheet:
-    """Wrapper over an Excel sheet for a unified openpyxl / xlrd API."""
+    """Wrapper over an Excel sheet for openpyxl API."""
 
-    def __init__(self, ws: Any, engine: str):
+    def __init__(self, ws: Any):
         self._ws = ws
-        self._engine = engine
 
     @property
     def max_row(self) -> int:
-        if self._engine == "openpyxl":
-            return self._ws.max_row or 0
-        else:
-            return self._ws.nrows
+        return self._ws.max_row or 0
 
     @property
     def max_column(self) -> int:
-        if self._engine == "openpyxl":
-            return self._ws.max_column or 0
-        else:
-            return self._ws.ncols
+        return self._ws.max_column or 0
 
     def cell_value(self, row: int, column: int) -> Any:
         try:
-            if self._engine == "openpyxl":
-                return self._ws.cell(row=row, column=column).value
-            else:
-                val = self._ws.cell_value(row - 1, column - 1)
-                if val == "" or val is None:
-                    return None
-                if isinstance(val, float) and val == int(val):
-                    return int(val)
-                return val
+            return self._ws.cell(row=row, column=column).value
         except Exception:
             return None
 
 
 class ExcelReader:
-    """Universal Excel file reader.
-    Supports .xlsx (openpyxl) and .xls (xlrd).
-    Uses openpyxl for .xlsx, xlrd for .xls.
-    """
+    """Universal Excel file reader supporting .xlsx via openpyxl."""
 
     def __init__(self, file_path: str):
         self.file_path = file_path
         self._wb: Any = None
-        self._engine: str = ""
         self._sheet_names: list[str] = []
         self._sheets: dict[str, Any] = {}
         self._load()
 
     def _load(self) -> None:
-        ext = os.path.splitext(self.file_path)[1].lower()
-
-        if ext == ".xls":
-            self._load_via_xlrd()
-        else:
-            try:
-                import openpyxl
-
-                wb = openpyxl.load_workbook(
-                    self.file_path,
-                    data_only=True,
-                )
-                self._engine = "openpyxl"
-                self._wb = wb
-                self._sheet_names = list(wb.sheetnames)
-                for sn in self._sheet_names:
-                    self._sheets[sn] = wb[sn]
-                return
-            except Exception:
-                pass
-            # Fallback: read_only mode (handles WPS/slightly corrupted files)
-            try:
-                import openpyxl
-
-                wb = openpyxl.load_workbook(
-                    self.file_path,
-                    data_only=True,
-                    read_only=True,
-                )
-                self._engine = "openpyxl"
-                self._wb = wb
-                self._sheet_names = list(wb.sheetnames)
-                for sn in self._sheet_names:
-                    self._sheets[sn] = wb[sn]
-                return
-            except Exception:
-                pass
-            self._load_via_xlrd()
-
-    def _load_via_xlrd(self) -> None:
         try:
-            import xlrd
-        except ImportError:
-            raise ImportError(
-                "xlrd is required to read .xls files. Install: pip install xlrd"
+            import openpyxl
+
+            wb = openpyxl.load_workbook(
+                self.file_path,
+                data_only=True,
             )
-
-        try:
-            wb = xlrd.open_workbook(self.file_path)
-            self._engine = "xlrd"
             self._wb = wb
-            self._sheet_names = list(wb.sheet_names())
+            self._sheet_names = list(wb.sheetnames)
             for sn in self._sheet_names:
-                self._sheets[sn] = wb.sheet_by_name(sn)
+                self._sheets[sn] = wb[sn]
+            return
+        except Exception:
+            pass
+        # Fallback: read_only mode (handles WPS/slightly corrupted files)
+        try:
+            import openpyxl
+
+            wb = openpyxl.load_workbook(
+                self.file_path,
+                data_only=True,
+                read_only=True,
+            )
+            self._wb = wb
+            self._sheet_names = list(wb.sheetnames)
+            for sn in self._sheet_names:
+                self._sheets[sn] = wb[sn]
+            return
         except Exception as e:
             raise ValueError(f"Failed to open Excel file {self.file_path}: {e}")
 
@@ -150,10 +105,10 @@ class ExcelReader:
     def get_sheet(self, name: str) -> ExcelSheet:
         if name not in self._sheets:
             raise KeyError(f"Sheet '{name}' not found")
-        return ExcelSheet(self._sheets[name], self._engine)
+        return ExcelSheet(self._sheets[name])
 
     def close(self) -> None:
-        if self._engine == "openpyxl" and self._wb is not None:
+        if self._wb is not None:
             self._wb.close()
 
 

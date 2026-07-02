@@ -14,7 +14,6 @@ dependencies = [
     "redis>=8.0.0",
     "sqlalchemy>=2.0.51",
     "uvicorn[standard]>=0.49.0",
-    "xlrd>=2.0.0",
     "xlsxwriter>=3.1.0",
 ]
 
@@ -57,7 +56,7 @@ module = [
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = ["xlsxwriter", "xlrd.*", "fakeredis.*", "openai", "openai.*"]
+module = ["xlsxwriter", "fakeredis.*", "openai", "openai.*"]
 ignore_missing_imports = true
 
 [tool.ruff.lint]

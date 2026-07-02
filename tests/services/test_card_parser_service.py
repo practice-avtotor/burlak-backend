@@ -16,7 +16,6 @@ from openpyxl import Workbook
 
 from app.services.card_parser_service import (
     CardParserService,
-    classify_file,
 )
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -74,7 +73,7 @@ def _default_mapping_config() -> dict:
                     {
                         "type": "filename_regex",
                         "pattern": r"^[a-z0-9]+-[a-z0-9]*-as-\d+",
-                    }
+                    },
                 ],
             },
             "table_boundaries": {
@@ -548,7 +547,7 @@ class TestMultiCard:
                         {
                             "type": "filename_regex",
                             "pattern": r"^[a-z0-9]+-[a-z0-9]*-as-\d+",
-                        }
+                        },
                     ],
                 },
                 "table_boundaries": {
