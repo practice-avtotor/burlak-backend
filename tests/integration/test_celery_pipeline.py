@@ -104,11 +104,50 @@ def test_celery_pipeline_success(temp_db_path: str, mock_storage_path: Path) -> 
             ]
         },
         "cards": {
-            "columns": {"part_no": 2, "qty": 4, "name": 3},
-            "table_boundaries": {
-                "header_row": 1,
-                "data_start_row": 2,
-                "end_markers": ["END"],
+            "formats": {
+                "card_format_A": {
+                    "structure_type": "standard_table",
+                    "description": "Технологические карты 工艺卡片",
+                    "card_number_source": "cell",
+                    "card_number_pattern": "CM-[A-Z0-9]+",
+                    "card_number_confidence": 0.90,
+                    "sheets": [
+                        {
+                            "sheet_name": None,
+                            "sheet_type": "card_data",
+                            "header_rows": [1],
+                            "data_start_row": 2,
+                            "columns": {
+                                "part_no": {
+                                    "col_index": 2,
+                                    "header": "零部件代号",
+                                    "confidence": 0.95,
+                                },
+                                "name_cn": {
+                                    "col_index": 3,
+                                    "header": "零件名称",
+                                    "confidence": 0.90,
+                                },
+                                "qty": {
+                                    "col_index": 4,
+                                    "header": "数量",
+                                    "confidence": 0.95,
+                                },
+                            },
+                            "table_boundaries": {
+                                "type": "multi_card",
+                                "multi_card": {
+                                    "separator_type": "empty_row",
+                                    "empty_rows_separator": 1,
+                                    "has_repeating_header": True,
+                                    "parts_header_row": 1,
+                                    "parts_data_start_row": 2,
+                                    "max_cards": 0,
+                                },
+                            },
+                        }
+                    ],
+                }
             },
             "file_classification_rules": {
                 "operational_card_patterns": [
@@ -121,6 +160,28 @@ def test_celery_pipeline_success(temp_db_path: str, mock_storage_path: Path) -> 
                 "service_file_patterns": [
                     {"type": "filename_keyword", "keywords": ["Cover", "封面", "目录"]}
                 ],
+            },
+        },
+        "mapping": {
+            "bom_to_card": {
+                "part_no": {
+                    "bom_column": "part_no",
+                    "card_column": "part_no",
+                    "match_type": "exact",
+                    "confidence": 0.95,
+                },
+                "name": {
+                    "bom_column": "name_cn",
+                    "card_column": "name_cn",
+                    "match_type": "fuzzy",
+                    "confidence": 0.90,
+                },
+                "quantity": {
+                    "bom_column": "qty",
+                    "card_column": "qty",
+                    "match_type": "exact",
+                    "confidence": 0.97,
+                },
             },
         },
     }

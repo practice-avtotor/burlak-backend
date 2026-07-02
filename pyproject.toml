@@ -27,10 +27,12 @@ dev = [
     "httpx2",
     "fakeredis>=2.36.2",
     "types-openpyxl>=3.1.5.20260518",
+    "openai>=1.0.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning:multiprocessing.popen_fork",
     "ignore::RuntimeWarning:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited",
@@ -56,7 +58,7 @@ module = [
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = ["xlsxwriter", "xlrd.*", "fakeredis.*"]
+module = ["xlsxwriter", "xlrd.*", "fakeredis.*", "openai", "openai.*"]
 ignore_missing_imports = true
 
 [tool.ruff.lint]

@@ -129,6 +129,28 @@ async def analyze_structure(request: Request) -> dict[str, Any]:
                     ],
                 },
             },
+            "mapping": {
+                "bom_to_card": {
+                    "part_no": {
+                        "bom_column": "part_no",
+                        "card_column": "part_no",
+                        "match_type": "exact",
+                        "confidence": 0.95,
+                    },
+                    "name": {
+                        "bom_column": "name_cn",
+                        "card_column": "name_cn",
+                        "match_type": "fuzzy",
+                        "confidence": 0.90,
+                    },
+                    "quantity": {
+                        "bom_column": "qty",
+                        "card_column": "qty",
+                        "match_type": "exact",
+                        "confidence": 0.97,
+                    },
+                },
+            },
         },
     }
 

@@ -19,6 +19,40 @@ services:
     command: uvicorn app.core.ml_stub:app --host 0.0.0.0 --port 5000
     ports:
       - "5000:5000"
+    profiles:
+      - mock
+    restart: unless-stopped
+
+  ml-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.ml
+    container_name: dev-ml-service
+    ports:
+      - "8001:8000"
+    environment:
+      OLLAMA_URL: http://ollama:11434/v1
+      OLLAMA_API_KEY: ollama
+      LLM_MODEL: qwen2.5:7B
+      LLM_TIMEOUT: "120"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: dev-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   web:
@@ -32,13 +66,13 @@ services:
       REDIS_URL: redis://redis:6379/0
       DB_URL: /data/jobs.db
       STORAGE_PATH: /data
-      ML_SERVICE_URL: http://ml-mock:5000
+      ML_SERVICE_URL: http://ml-service:8000
     volumes:
       - ./data:/data
     depends_on:
       redis:
         condition: service_healthy
-      ml-mock:
+      ml-service:
         condition: service_started
     restart: unless-stopped
 
@@ -52,12 +86,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       DB_URL: /data/jobs.db
       STORAGE_PATH: /data
-      ML_SERVICE_URL: http://ml-mock:5000
+      ML_SERVICE_URL: http://ml-service:8000
     volumes:
       - ./data:/data
     depends_on:
       redis:
         condition: service_healthy
-      ml-mock:
+      ml-service:
         condition: service_started
     restart: unless-stopped
+
+volumes:
+  ollama_data:

@@ -147,6 +147,7 @@ class StructureAdapter:
         Raises:
             httpx.HTTPStatusError: If the ML service returns a non-2xx status.
             httpx.ConnectError: If the ML service is unreachable or circuit is open.
+            ValueError: If the ML service returns an error response.
         """
         self._circuit_breaker.check()
 
@@ -162,8 +163,21 @@ class StructureAdapter:
 
         self._circuit_breaker.record_success()
         result: dict[str, Any] = response.json()
-        logger.info("Received mapping_config with %d keys", len(result))
-        return result
+
+        # Check if the ML service returned an error
+        if result.get("status") == "error":
+            error_info = result.get("error", {})
+            raise ValueError(
+                f"ML service error: {error_info.get('code', 'UNKNOWN')} — "
+                f"{error_info.get('message', '')}"
+            )
+
+        # Extract mapping_config from the ML service response
+        mapping_config: dict[str, Any] | None = result.get("mapping_config")
+        if mapping_config is None:
+            raise ValueError("ML service response is missing 'mapping_config' field")
+        logger.info("Received mapping_config with %d keys", len(mapping_config))
+        return mapping_config
 
     def translate_batch(
         self,

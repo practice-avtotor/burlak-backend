@@ -43,7 +43,7 @@ class _MockTransport(httpx.BaseTransport):
 
 class TestAnalyzeStructure:
     def test_analyze_structure_success(self, monkeypatch):
-        """Successful analysis returns the mapping config."""
+        """Successful analysis returns the mapping config from wrapped response."""
         expected_config = {
             "cards": {
                 "columns": {"part_no": 1, "qty": 3, "name": 2},
@@ -54,7 +54,7 @@ class TestAnalyzeStructure:
             status_code = 200
 
             def json(self):
-                return expected_config
+                return {"status": "success", "mapping_config": expected_config}
 
             def raise_for_status(self):
                 pass
@@ -77,6 +77,74 @@ class TestAnalyzeStructure:
         adapter = StructureAdapter("http://ml-service:8000")
         result = adapter.analyze_structure({"filename": "test.xlsx", "sheets": []})
         assert result == expected_config
+
+    def test_analyze_structure_error_response(self, monkeypatch):
+        """ML service error response raises ValueError with error details."""
+
+        class MockResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "status": "error",
+                    "error": {
+                        "code": "INVALID_INPUT",
+                        "message": "Invalid request format",
+                    },
+                }
+
+            def raise_for_status(self):
+                pass
+
+        class MockClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def post(self, url, json=None):
+                return MockResponse()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        monkeypatch.setattr("app.services.structure_adapter.httpx.Client", MockClient)
+
+        adapter = StructureAdapter("http://ml-service:8000")
+        with pytest.raises(ValueError, match="ML service error: INVALID_INPUT"):
+            adapter.analyze_structure({"sheets": []})
+
+    def test_analyze_structure_missing_mapping_config(self, monkeypatch):
+        """Response without mapping_config raises ValueError."""
+
+        class MockResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "success"}
+
+            def raise_for_status(self):
+                pass
+
+        class MockClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def post(self, url, json=None):
+                return MockResponse()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        monkeypatch.setattr("app.services.structure_adapter.httpx.Client", MockClient)
+
+        adapter = StructureAdapter("http://ml-service:8000")
+        with pytest.raises(ValueError, match="missing 'mapping_config'"):
+            adapter.analyze_structure({"sheets": []})
 
     def test_analyze_structure_http_error(self, monkeypatch):
         """HTTP 500 raises httpx.HTTPStatusError."""
