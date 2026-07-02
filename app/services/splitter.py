@@ -29,12 +29,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
-try:
-    from lxml import etree as _lxml_etree
-
-    _HAS_LXML = True
-except ImportError:
-    _HAS_LXML = False
+_HAS_LXML = False
+_lxml_etree = None
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 

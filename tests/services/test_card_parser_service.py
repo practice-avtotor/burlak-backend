@@ -52,8 +52,30 @@ def _default_mapping_config() -> dict:
     return {
         "cards": {
             "file_classification_rules": {
-                "service_keywords": ["封面", "目录", "template"],
-                "operational_keywords": ["作业指导书"],
+                "service_file_patterns": [
+                    {
+                        "type": "filename_keyword",
+                        "keywords": ["封面", "目录", "template"],
+                    }
+                ],
+                "operational_card_patterns": [
+                    {
+                        "type": "filename_keyword",
+                        "keywords": ["作业指导书"],
+                    },
+                    {
+                        "type": "filename_regex",
+                        "pattern": r"^\d{2,}",
+                    },
+                    {
+                        "type": "filename_regex",
+                        "pattern": r"^[A-Za-z]{1,3}\d{2,}",
+                    },
+                    {
+                        "type": "filename_regex",
+                        "pattern": r"^[a-z0-9]+-[a-z0-9]*-as-\d+",
+                    }
+                ],
             },
             "table_boundaries": {
                 "header_row": 1,
@@ -79,40 +101,62 @@ def _default_mapping_config() -> dict:
 
 class TestClassifyFile:
     def test_service_file_cover(self):
-        assert classify_file("封面.xlsx") == "service"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("封面.xlsx") == "service"
 
     def test_service_file_toc(self):
-        assert classify_file("目录.xlsx") == "service"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("目录.xlsx") == "service"
 
     def test_service_file_template(self):
-        assert classify_file("template_cover.xlsx") == "service"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("template_cover.xlsx") == "service"
 
     def test_operational_keyword(self):
-        assert classify_file("作业指导书_001.xlsx") == "operational_card"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("作业指导书_001.xlsx") == "operational_card"
 
     def test_operational_digit_prefix(self):
-        assert classify_file("001-card.xlsx") == "operational_card"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("001-card.xlsx") == "operational_card"
 
     def test_operational_letter_digit_prefix(self):
-        assert classify_file("A001-assembly.xlsx") == "operational_card"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("A001-assembly.xlsx") == "operational_card"
 
     def test_operational_as_pattern(self):
-        assert classify_file("SQRT1L-A-AS-04001.xlsx") == "operational_card"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("SQRT1L-A-AS-04001.xlsx") == "operational_card"
 
     def test_unknown_file(self):
-        assert classify_file("random_report.xlsx") == "unknown"
+        parser = CardParserService(_default_mapping_config())
+        assert parser.classify("random_report.xlsx") == "unknown"
 
     def test_custom_rules_override(self):
         rules = {
-            "service_keywords": ["custom_svc"],
-            "operational_keywords": ["custom_op"],
+            "cards": {
+                "file_classification_rules": {
+                    "service_file_patterns": [
+                        {"type": "filename_keyword", "keywords": ["custom_svc"]}
+                    ],
+                    "operational_card_patterns": [
+                        {"type": "filename_keyword", "keywords": ["custom_op"]}
+                    ],
+                }
+            }
         }
-        assert classify_file("custom_svc_file.xlsx", rules) == "service"
-        assert classify_file("custom_op_file.xlsx", rules) == "operational_card"
+        parser = CardParserService(rules)
+        assert parser.classify("custom_svc_file.xlsx") == "service"
+        assert parser.classify("custom_op_file.xlsx") == "operational_card"
 
     def test_service_keyword_takes_priority(self):
         """Even if filename contains operational keyword, service wins."""
-        assert classify_file("CP7作业指导书封面及目录.xlsx") == "service"
+        cfg = _default_mapping_config()
+        cfg["cards"]["file_classification_rules"]["service_file_patterns"].append(
+            {"type": "filename_keyword", "keywords": ["封面"]}
+        )
+        parser = CardParserService(cfg)
+        assert parser.classify("CP7作业指导书封面.xlsx") == "service"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -482,8 +526,30 @@ class TestMultiCard:
         return {
             "cards": {
                 "file_classification_rules": {
-                    "service_keywords": ["封面", "目录", "template"],
-                    "operational_keywords": ["作业指导书"],
+                    "service_file_patterns": [
+                        {
+                            "type": "filename_keyword",
+                            "keywords": ["封面", "目录", "template"],
+                        }
+                    ],
+                    "operational_card_patterns": [
+                        {
+                            "type": "filename_keyword",
+                            "keywords": ["作业指导书"],
+                        },
+                        {
+                            "type": "filename_regex",
+                            "pattern": r"^\d{2,}",
+                        },
+                        {
+                            "type": "filename_regex",
+                            "pattern": r"^[A-Za-z]{1,3}\d{2,}",
+                        },
+                        {
+                            "type": "filename_regex",
+                            "pattern": r"^[a-z0-9]+-[a-z0-9]*-as-\d+",
+                        }
+                    ],
                 },
                 "table_boundaries": {
                     "header_row": 1,
@@ -786,7 +852,7 @@ class TestClassifyFileWithFormat:
         assert classify_file_with_format("001封面.xlsx", rules) == ("service", None)
 
     def test_new_schema_heuristic_fallback(self):
-        """When no patterns match, heuristic fallbacks still work but return None format."""
+        """When no patterns match, it returns unknown and None format."""
         from app.services.card_parser_service import classify_file_with_format
 
         rules = {
@@ -794,26 +860,16 @@ class TestClassifyFileWithFormat:
             "service_file_patterns": [],
         }
 
-        # Heuristic: digit prefix
         assert classify_file_with_format("001-card.xlsx", rules) == (
-            "operational_card",
-            None,
-        )
-        # Heuristic: AS pattern
-        assert classify_file_with_format("SQRT1L-A-AS-04001.xlsx", rules) == (
-            "operational_card",
+            "unknown",
             None,
         )
 
     def test_no_rules_uses_defaults(self):
-        """When classification_rules is None, defaults are used and format_group is None."""
+        """When classification_rules is None, it returns unknown and None format."""
         from app.services.card_parser_service import classify_file_with_format
 
-        assert classify_file_with_format("封面.xlsx", None) == ("service", None)
-        assert classify_file_with_format("001-card.xlsx", None) == (
-            "operational_card",
-            None,
-        )
+        assert classify_file_with_format("封面.xlsx", None) == ("unknown", None)
         assert classify_file_with_format("random.xlsx", None) == ("unknown", None)
 
 

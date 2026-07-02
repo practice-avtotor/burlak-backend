@@ -44,7 +44,7 @@ celery_app.conf.update(
     task_default_retry_delay=10,
     task_max_retries=3,
     # --- Worker ---
-    worker_prefetch_multiplier=4,
+    worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=100,
     worker_cancel_long_running_tasks_on_connection_loss=True,
     # --- Broker ---
@@ -61,17 +61,6 @@ celery_app.conf.update(
             "timeout": 5.0,
         },
     },
-    # --- Queue routing ---
-    # Exact task names — Celery does NOT support glob patterns in task_routes.
-    # Each task has an explicit `name=` in its decorator to guarantee deterministic routing.
-    task_routes={
-        "app.worker.tasks.unpack.unpack": {"queue": "unpack"},
-        "app.worker.tasks.analyze_mapping.analyze_mapping": {"queue": "mapping"},
-        "app.worker.tasks.process_card.process_card": {"queue": "cards"},
-        "app.worker.tasks.aggregate.aggregate": {"queue": "aggregate"},
-        "app.worker.tasks.package.package": {"queue": "aggregate"},
-    },
-    task_create_missing_queues=True,
 )
 
 

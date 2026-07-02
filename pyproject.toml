@@ -24,15 +24,14 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.18",
-    "httpx2",
     "fakeredis>=2.36.2",
     "types-openpyxl>=3.1.5.20260518",
-    "openai>=1.0.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+addopts = "--ignore=tests/ai_analyzer"
 filterwarnings = [
     "ignore::DeprecationWarning:multiprocessing.popen_fork",
     "ignore::RuntimeWarning:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited",

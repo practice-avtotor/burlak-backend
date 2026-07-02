@@ -80,60 +80,18 @@ class MLCardParseResult:
 # File classification
 # ---------------------------------------------------------------------------
 
+
 # Default classification rules (used when mapping_config omits them).
 # These mirror the universal patterns from the original ``file_classifier.py``
 # but are intentionally simpler — no dependency on ``heuristic_analyzer``.
-_DEFAULT_SERVICE_KEYWORDS: list[str] = [
-    "封面",
-    "目录",
-    "记录表",
-    "空表",
-    "填写范本",
-    "填写说明",
-    "工艺现场工时汇总清单",
-    "工时汇总",
-    "对比",
-    "обложка",
-    "содержание",
-    "cover",
-    "toc",
-    "template",
-]
-
-_DEFAULT_OPERATIONAL_KEYWORDS: list[str] = [
-    "作业指导书",
-    "作业要领书",
-    "操作指导",
-    "工艺卡",
-    "工序卡",
-]
-
-
 def classify_file(
     filename: str,
     classification_rules: dict[str, Any] | None = None,
 ) -> str:
     """Classify a file as ``service``, ``operational_card``, or ``unknown``.
 
-    Uses rules from ``mapping_config.cards.file_classification_rules`` when
-    provided, otherwise falls back to built-in keyword lists.
-
-    .. note::
-
-        This function returns only the file type string.  If you need the
-        ``format_group`` name (for the new ``cards.formats`` schema), use
-        :func:`classify_file_with_format` instead.
-
-    Args:
-        filename: Basename of the file (without directory path).
-        classification_rules: Optional dict with keys
-            ``service_keywords`` and ``operational_keywords``
-            (each a list of strings), **or** the new schema keys
-            ``operational_card_patterns`` and ``service_file_patterns``
-            (each a list of pattern dicts).
-
-    Returns:
-        One of ``"service"``, ``"operational_card"``, ``"unknown"``.
+    Uses rules from ``mapping_config.cards.file_classification_rules``,
+    relying strictly on ML-driven patterns.
     """
     file_type, _ = classify_file_with_format(filename, classification_rules)
     return file_type
@@ -145,137 +103,76 @@ def classify_file_with_format(
 ) -> tuple[str, str | None]:
     """Classify a file and return ``(file_type, format_group)``.
 
-    Supports both the legacy flat schema (``service_keywords`` /
-    ``operational_keywords``) and the new schema
-    (``operational_card_patterns`` / ``service_file_patterns`` with
-    ``format_group``).
-
-    Args:
-        filename: Basename of the file (without directory path).
-        classification_rules: Optional dict from
-            ``mapping_config.cards.file_classification_rules``.
-
-    Returns:
-        Tuple of ``(file_type, format_group)`` where ``file_type`` is one of
-        ``"service"``, ``"operational_card"``, ``"unknown"`` and
-        ``format_group`` is the matched format name (e.g. ``"card_format_A"``)
-        or ``None`` for service/unknown files or when using legacy rules.
+    Relies strictly on ML-driven configurations and rules.
     """
+    if not classification_rules:
+        return "unknown", None
+
     name_lower = os.path.splitext(filename)[0].lower()
 
-    # ── Detect schema type ──────────────────────────────────────────
-    # New schema: has "operational_card_patterns" or "service_file_patterns"
-    # Legacy schema: has "service_keywords" or "operational_keywords"
-    has_new_schema = bool(
-        classification_rules
-        and (
-            classification_rules.get("operational_card_patterns")
-            or classification_rules.get("service_file_patterns")
-        )
+    # ── Check for new schema patterns ──────────────────────────────
+    has_new_schema = (
+        "service_file_patterns" in classification_rules
+        or "operational_card_patterns" in classification_rules
     )
 
     if has_new_schema:
-        return _classify_with_new_schema(name_lower, classification_rules)
+        # Service file patterns (highest priority)
+        svc_patterns = classification_rules.get("service_file_patterns", [])
+        for pattern_def in svc_patterns:
+            ptype = pattern_def.get("type", "")
+            if ptype == "filename_keyword":
+                keywords = pattern_def.get("keywords", [])
+                for kw in keywords:
+                    if kw.lower() in name_lower:
+                        return "service", None
+            elif ptype == "filename_regex":
+                regex = pattern_def.get("pattern", "")
+                if regex and re.search(regex, name_lower, re.IGNORECASE):
+                    return "service", None
+            elif ptype == "sheet_keyword":
+                keywords = pattern_def.get("keywords", [])
+                for kw in keywords:
+                    if kw.lower() in name_lower:
+                        return "service", None
+
+        # Operational card patterns
+        op_patterns = classification_rules.get("operational_card_patterns", [])
+        for pattern_def in op_patterns:
+            ptype = pattern_def.get("type", "")
+            format_group = pattern_def.get("format_group")
+
+            if ptype == "filename_regex":
+                regex = pattern_def.get("pattern", "")
+                if regex and re.search(regex, name_lower, re.IGNORECASE):
+                    return "operational_card", format_group
+
+            elif ptype == "filename_keyword":
+                keywords = pattern_def.get("keywords", [])
+                for kw in keywords:
+                    if kw.lower() in name_lower:
+                        return "operational_card", format_group
+
+            elif ptype == "sheet_keyword":
+                keywords = pattern_def.get("keywords", [])
+                for kw in keywords:
+                    if kw.lower() in name_lower:
+                        return "operational_card", format_group
+
     else:
-        return _classify_with_legacy_schema(name_lower, classification_rules)
+        # ── Legacy schema flat lists ─────────────────────────────────
+        svc_keywords = classification_rules.get("service_keywords")
+        op_keywords = classification_rules.get("operational_keywords")
 
-
-def _classify_with_new_schema(
-    name_lower: str,
-    rules: dict[str, Any] | None,
-) -> tuple[str, str | None]:
-    """Classify using the new ``operational_card_patterns`` /
-    ``service_file_patterns`` schema.
-    """
-    if not rules:
-        return "unknown", None
-
-    # ── Service file patterns (highest priority) ────────────────────
-    svc_patterns: list[dict[str, Any]] = rules.get("service_file_patterns", [])
-    for pattern_def in svc_patterns:
-        ptype = pattern_def.get("type", "")
-        if ptype == "filename_keyword":
-            keywords: list[str] = pattern_def.get("keywords", [])
-            for kw in keywords:
-                if kw.lower() in name_lower:
-                    return "service", None
-        elif ptype == "filename_regex":
-            regex = pattern_def.get("pattern", "")
-            if regex and re.search(regex, name_lower, re.IGNORECASE):
-                return "service", None
-        elif ptype == "sheet_keyword":
-            # sheet_keyword patterns are checked against the filename
-            # as a heuristic fallback; if the filename itself contains
-            # any of the keywords, classify as service.
-            keywords = pattern_def.get("keywords", [])
-            for kw in keywords:
+        if svc_keywords is not None:
+            for kw in svc_keywords:
                 if kw.lower() in name_lower:
                     return "service", None
 
-    # ── Operational card patterns ───────────────────────────────────
-    op_patterns: list[dict[str, Any]] = rules.get("operational_card_patterns", [])
-    for pattern_def in op_patterns:
-        ptype = pattern_def.get("type", "")
-        format_group: str | None = pattern_def.get("format_group")
-
-        if ptype == "filename_regex":
-            regex = pattern_def.get("pattern", "")
-            if regex and re.search(regex, name_lower, re.IGNORECASE):
-                return "operational_card", format_group
-
-        elif ptype == "filename_keyword":
-            keywords = pattern_def.get("keywords", [])
-            for kw in keywords:
+        if op_keywords is not None:
+            for kw in op_keywords:
                 if kw.lower() in name_lower:
-                    return "operational_card", format_group
-
-        elif ptype == "sheet_keyword":
-            keywords = pattern_def.get("keywords", [])
-            for kw in keywords:
-                if kw.lower() in name_lower:
-                    return "operational_card", format_group
-
-    # ── Heuristic fallbacks (same as legacy) ────────────────────────
-    if re.match(r"^(?:[A-Za-z]{1,3})?\d{2,}", name_lower):
-        return "operational_card", None
-
-    if re.match(r"^[a-z0-9]+-[a-z0-9]*-as-\d+", name_lower):
-        return "operational_card", None
-
-    return "unknown", None
-
-
-def _classify_with_legacy_schema(
-    name_lower: str,
-    rules: dict[str, Any] | None,
-) -> tuple[str, str | None]:
-    """Classify using the legacy flat ``service_keywords`` /
-    ``operational_keywords`` schema.
-    """
-    svc_keywords = _DEFAULT_SERVICE_KEYWORDS
-    op_keywords = _DEFAULT_OPERATIONAL_KEYWORDS
-
-    if rules:
-        svc_keywords = rules.get("service_keywords", svc_keywords)
-        op_keywords = rules.get("operational_keywords", op_keywords)
-
-    # Service keywords take priority (highest precedence)
-    for kw in svc_keywords:
-        if kw.lower() in name_lower:
-            return "service", None
-
-    # Operational card keywords
-    for kw in op_keywords:
-        if kw.lower() in name_lower:
-            return "operational_card", None
-
-    # Heuristic: filename starts with 2+ digits (operation number)
-    if re.match(r"^(?:[A-Za-z]{1,3})?\d{2,}", name_lower):
-        return "operational_card", None
-
-    # Heuristic: pattern like MODEL-A-AS-NNNNN
-    if re.match(r"^[a-z0-9]+-[a-z0-9]*-as-\d+", name_lower):
-        return "operational_card", None
+                    return "operational_card", None
 
     return "unknown", None
 
@@ -454,6 +351,17 @@ class CardParserService:
         ``None`` for service/unknown files or when using legacy rules.
         """
         return classify_file_with_format(filename, self._classification_rules)
+
+    @property
+    def service_keywords(self) -> list[str]:
+        """Get all service keywords from the classification rules."""
+        keywords: list[str] = []
+        if self._classification_rules:
+            patterns = self._classification_rules.get("service_file_patterns", [])
+            for p in patterns:
+                if p.get("type") in ("filename_keyword", "sheet_keyword"):
+                    keywords.extend(p.get("keywords", []))
+        return keywords
 
     def parse_card(self, data: bytes, filename: str) -> MLCardParseResult:
         """Parse an operational card XLSX from raw bytes.
