@@ -26,11 +26,13 @@ class StructurePipeline:
 
         # Run BOM and card analysis in parallel — they are independent
         bom_result, card_result = await asyncio.gather(
-            self.bom_analyzer.analyze(bom),
-            self.cards_analyzer.analyze(sample_cards),
+            self.bom_analyzer.analyze(bom, options=options),
+            self.cards_analyzer.analyze(sample_cards, options=options),
         )
 
-        mapping_result = await self.mapping_builder.build(bom_result, card_result)
+        mapping_result = await self.mapping_builder.build(
+            bom_result, card_result, options=options
+        )
 
         return {
             "status": "success",

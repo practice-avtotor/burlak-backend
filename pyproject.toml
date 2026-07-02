@@ -9,7 +9,6 @@ dependencies = [
     "celery>=5.6.3",
     "fastapi>=0.138.0",
     "httpx>=0.28.1",
-    "openai>=1.0.0",
     "openpyxl>=3.1.5",
     "pydantic-settings>=2.14.2",
     "redis>=8.0.0",
@@ -32,6 +31,7 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning:multiprocessing.popen_fork",
     "ignore::RuntimeWarning:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited",

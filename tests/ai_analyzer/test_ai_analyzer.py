@@ -6,7 +6,6 @@ Tests use mocked ``AsyncOpenAI`` to avoid real LLM calls.
 from __future__ import annotations
 
 import json
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
@@ -24,8 +23,13 @@ from ai_analyzer.schemas import (
     FieldMapping,
     MappingResult,
 )
-from ai_analyzer.services import LLMAnalysisError, BomAnalyzer, CardsAnalyzer, MappingBuilder, safe_parse
-
+from ai_analyzer.services import (
+    BomAnalyzer,
+    CardsAnalyzer,
+    LLMAnalysisError,
+    MappingBuilder,
+    safe_parse,
+)
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Schema tests
@@ -127,9 +131,7 @@ class TestAnalyzeStructureRequest:
         assert req.sample_cards == []
 
     def test_options_optional(self):
-        req = AnalyzeStructureRequest(
-            bom=[], sample_cards=[], options={"key": "value"}
-        )
+        req = AnalyzeStructureRequest(bom=[], sample_cards=[], options={"key": "value"})
         assert req.options == {"key": "value"}
 
 

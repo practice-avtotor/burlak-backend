@@ -138,14 +138,18 @@ async def safe_parse(
 
 class BomAnalyzer:
     """
-    Разбор BOM файла
+    BOM file analyzer
     """
 
     MODEL = LLM_MODEL
 
     async def analyze(
-        self, bom_snapshots: list[dict[str, object]]
+        self,
+        bom_snapshots: list[dict[str, object]],
+        options: dict[str, object] | None = None,
     ) -> BomAnalysisResult:
+        if options:
+            logger.debug("BomAnalyzer options: %s", options)
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": BOM_SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(bom_snapshots, ensure_ascii=False)},
@@ -156,14 +160,18 @@ class BomAnalyzer:
 
 class CardsAnalyzer:
     """
-    Разбор операционной карты
+    Operational card analyzer
     """
 
     MODEL = LLM_MODEL
 
     async def analyze(
-        self, cards_snapshots: list[dict[str, object]]
+        self,
+        cards_snapshots: list[dict[str, object]],
+        options: dict[str, object] | None = None,
     ) -> CardAnalysisResult:
+        if options:
+            logger.debug("CardsAnalyzer options: %s", options)
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": CARD_SYSTEM_PROMPT},
             {
@@ -177,15 +185,19 @@ class CardsAnalyzer:
 
 class MappingBuilder:
     """
-    Маппинг
+    Mapping builder
     """
 
     MODEL = LLM_MODEL
 
-    # Принимаем результаты предыдущего анализа
     async def build(
-        self, bom_analysis: BomAnalysisResult, card_analysis: CardAnalysisResult
+        self,
+        bom_analysis: BomAnalysisResult,
+        card_analysis: CardAnalysisResult,
+        options: dict[str, object] | None = None,
     ) -> MappingResult:
+        if options:
+            logger.debug("MappingBuilder options: %s", options)
         payload = {
             "bom": bom_analysis.model_dump(),
             "cards": card_analysis.model_dump(),

@@ -21,9 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         await client.models.list()
     except Exception as exc:
-        raise RuntimeError(
-            f"LLM service (Ollama) is not reachable: {exc}"
-        ) from exc
+        raise RuntimeError(f"LLM service (Ollama) is not reachable: {exc}") from exc
     yield
     # Shutdown: close the HTTP client session gracefully
     await close_client()
@@ -81,7 +79,12 @@ async def llm_analysis_error_handler(
     status_code: int
     if exc.code in ("INCOMPLETE_OUTPUT", "LLM_API_ERROR"):
         status_code = 504
-    elif exc.code in ("INVALID_MODEL_OUTPUT", "INVALID_JSON", "EMPTY_RESPONSE", "EMPTY_CONTENT"):
+    elif exc.code in (
+        "INVALID_MODEL_OUTPUT",
+        "INVALID_JSON",
+        "EMPTY_RESPONSE",
+        "EMPTY_CONTENT",
+    ):
         status_code = 422
     else:
         status_code = 500

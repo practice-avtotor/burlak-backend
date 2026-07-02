@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, cast
+from typing import Any
 
 import httpx
 
@@ -175,9 +175,7 @@ class StructureAdapter:
         # Extract mapping_config from the ML service response
         mapping_config: dict[str, Any] | None = result.get("mapping_config")
         if mapping_config is None:
-            raise ValueError(
-                "ML service response is missing 'mapping_config' field"
-            )
+            raise ValueError("ML service response is missing 'mapping_config' field")
         logger.info("Received mapping_config with %d keys", len(mapping_config))
         return mapping_config
 

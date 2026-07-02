@@ -28,12 +28,19 @@ class AnalyzeStructureRequest(BaseModel):
 
 
 class ColumnMapping(BaseModel):
-    col_index: int = Field(description="1-based номер колонки (0 = не найдена)")
+    col_index: int = Field(
+        ge=0,
+        description="1-based column index (0 = not found)",
+    )
     header: str | None = Field(
         None,
-        description="Текст заголовка колонки, если найден (null если заголовка нет)",
+        description="Column header text if found (null if no header)",
     )
-    confidence: float = Field(description="Оценка уверенности модели от 0.0 до 1.0")
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Model confidence score from 0.0 to 1.0",
+    )
 
 
 class ConfigColumnMapping(ColumnMapping):
@@ -58,21 +65,23 @@ class BomLayout(BaseModel):
 
 
 class BomSheet(BaseModel):
-    sheet_name: str = Field(description="Имя листа в Excel-файле")
+    sheet_name: str = Field(description="Sheet name in the Excel file")
     sheet_type: Literal["bom_data", "service", "unknown"] = Field(
-        description="Тип листа: данные, служебный или неизвестный"
+        description="Sheet type: data, service, or unknown"
     )
     header_rows: list[int] = Field(
-        description="Список индексов строк, которые занимает заголовок"
+        description="List of row indices occupied by the header"
     )
     data_start_row: int = Field(
-        description="Индекс строки, с которой начинаются фактические данные"
+        ge=1,
+        description="Row index where actual data starts (1-based)",
     )
     total_data_rows_estimate: int = Field(
-        description="Оценочное количество строк данных"
+        ge=0,
+        description="Estimated number of data rows",
     )
-    columns: BomColumns = Field(description="Разметка ключевых колонок спецификации")
-    layout: BomLayout = Field(description="Мета-разметка структуры листа")
+    columns: BomColumns = Field(description="Key column mappings for the BOM sheet")
+    layout: BomLayout = Field(description="Meta layout description of the sheet")
 
 
 class BomAnalysisResult(BaseModel):
@@ -125,13 +134,16 @@ class CardColumns(BaseModel):
 
 class CardSheetMapping(BaseModel):
     sheet_name: str | None = Field(
-        description="Имя листа (null, если правило применимо ко всем листам)"
+        description="Sheet name (null if rule applies to all sheets)"
     )
     sheet_type: Literal["card_data", "service", "unknown"] = Field(
-        description="Тип содержимого на листе"
+        description="Type of content on the sheet"
     )
-    header_rows: list[int] = Field(description="Строки заголовков (1-based)")
-    data_start_row: int = Field(description="Строка начала данных")
+    header_rows: list[int] = Field(description="Header row indices (1-based)")
+    data_start_row: int = Field(
+        ge=1,
+        description="Data start row (1-based)",
+    )
     columns: CardColumns
     table_boundaries: TableBoundaries
 
@@ -141,7 +153,11 @@ class CardFormatMapping(BaseModel):
     description: str
     card_number_source: Literal["filename", "sheet_content", "header", "cell"]
     card_number_pattern: str
-    card_number_confidence: float
+    card_number_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence in card number detection",
+    )
     sheets: list[CardSheetMapping]
 
 
@@ -184,15 +200,19 @@ class CardAnalysisResult(BaseModel):
 
 class FieldMapping(BaseModel):
     bom_column: str = Field(
-        description="Ключ колонки из структуры BOM (например, 'part_no')"
+        description="Column key from BOM structure (e.g. 'part_no')"
     )
     card_column: str = Field(
-        description="Ключ колонки из структуры карты (например, 'part_no')"
+        description="Column key from card structure (e.g. 'part_no')"
     )
     match_type: Literal["exact", "fuzzy", "regex"] = Field(
-        description="Тип алгоритма сопоставления"
+        description="Type of matching algorithm"
     )
-    confidence: float = Field(description="Оценка уверенности от 0.0 до 1.0")
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence score from 0.0 to 1.0",
+    )
 
 
 class BomToCardMapping(BaseModel):

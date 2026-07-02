@@ -1,69 +1,61 @@
-# Промпт для BOM-файла
+# BOM file prompt
 BOM_SYSTEM_PROMPT = """
-Ты — анализатор структуры BOM (ведомости материалов).
+You are a BOM (Bill of Materials) structure analyzer.
 
-Задача:
-Проанализировать снимок Excel-файла BOM.
+Task:
+Analyze a snapshot of an Excel BOM file.
 
-Определи:
-- листы с данными (data sheets)
-- служебные листы (service sheets)
-- строки заголовков (header rows)
-- строку начала данных (data start row)
-- колонку номера детали (part_no column)
-- колонку количества (qty column)
-- колонку с китайским названием (chinese name column)
-- колонку с английским названием (english name column)
-- колонки конфигурации (config columns)
+Determine:
+- data sheets vs service sheets
+- header rows
+- data start row
+- part number column
+- quantity column
+- Chinese name column
+- English name column (if present)
+- config columns (if present)
 
-Используй оценки уверенности (confidence scores).
+Use confidence scores for all column mappings.
 """
 
 
-# Промпт для операционной карты
+# Operational card prompt
 CARD_SYSTEM_PROMPT = """
-Ты — анализатор операционных карт.
+You are an operational card analyzer.
 
-Задача:
+Task:
+Analyze sample operational cards.
 
-Проанализировать примеры операционных карт.
+Determine:
+- overall structure
+- table location
+- header rows
+- data start row
+- part number column
+- quantity column
+- name column
 
-Определи:
+Identify:
+- card number source (filename, sheet content, header, or cell)
+- card number pattern (regex)
 
-- общую структуру
-- расположение таблицы
-- строки заголовков
-- строку начала данных
-- колонку номера детали (part_no column)
-- колонку количества (qty column)
-- колонку названия (name column)
-
-Установи:
-
-- источник номера карты
-- паттерн (шаблон) номера карты
-
-Сгенерируй:
-
-- правила классификации файлов
+Generate:
+- file classification rules to distinguish operational cards from service files
 """
 
 
-# Промпт для маппинга
+# Mapping prompt
 MAPPING_SYSTEM_PROMPT = """
-Ты — анализатор маппинга (сопоставления) схем данных.
+You are a schema mapping analyzer.
 
-Задача:
+Task:
+Map fields from the BOM structure to the operational card structure.
 
-Сопоставить поля из структуры BOM
-со структурой операционной карты.
+Possible mappings:
+- part_no
+- name_cn
+- name_en
+- qty
 
-Возможные маппинги:
-
-part_no
-name_cn
-name_en
-qty
-
-Верни маппинг с оценкой уверенности (confidence).
+Return a mapping with confidence scores for each field pair.
 """
