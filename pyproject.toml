@@ -57,7 +57,7 @@ module = [
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = ["xlsxwriter", "xlrd.*", "fakeredis.*"]
+module = ["xlsxwriter", "xlrd.*", "fakeredis.*", "openai", "openai.*"]
 ignore_missing_imports = true
 
 [tool.ruff.lint]
