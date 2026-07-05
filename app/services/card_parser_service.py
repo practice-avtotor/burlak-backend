@@ -180,9 +180,40 @@ def classify_file_with_format(
         return _classify_with_legacy_schema(name_lower, classification_rules)
 
 
+def classify_file_with_content(
+    filename: str,
+    classification_rules: dict[str, Any] | None = None,
+    sheet_content: str | None = None,
+) -> tuple[str, str | None]:
+    """Classify a file, also checking sheet_content for sheet_keyword patterns.
+
+    This extends classify_file_with_format by allowing the caller to pass
+    extracted sheet content (e.g. all cell values concatenated) so that
+    sheet_keyword patterns can match against actual sheet data, not just
+    the filename.
+    """
+    name_lower = os.path.splitext(filename)[0].lower()
+
+    has_new_schema = bool(
+        classification_rules
+        and (
+            classification_rules.get("operational_card_patterns")
+            or classification_rules.get("service_file_patterns")
+        )
+    )
+
+    if has_new_schema:
+        return _classify_with_new_schema(
+            name_lower, classification_rules, sheet_content=sheet_content
+        )
+    else:
+        return _classify_with_legacy_schema(name_lower, classification_rules)
+
+
 def _classify_with_new_schema(
     name_lower: str,
     rules: dict[str, Any] | None,
+    sheet_content: str | None = None,
 ) -> tuple[str, str | None]:
     """Classify using the new ``operational_card_patterns`` /
     ``service_file_patterns`` schema.
@@ -204,13 +235,16 @@ def _classify_with_new_schema(
             if regex and re.search(regex, name_lower, re.IGNORECASE):
                 return "service", None
         elif ptype == "sheet_keyword":
-            # sheet_keyword patterns are checked against the filename
-            # as a heuristic fallback; if the filename itself contains
-            # any of the keywords, classify as service.
             keywords = pattern_def.get("keywords", [])
-            for kw in keywords:
-                if kw.lower() in name_lower:
-                    return "service", None
+            if sheet_content:
+                content_lower = sheet_content.lower()
+                for kw in keywords:
+                    if kw.lower() in content_lower:
+                        return "service", None
+            else:
+                for kw in keywords:
+                    if kw.lower() in name_lower:
+                        return "service", None
 
     # ── Operational card patterns ───────────────────────────────────
     op_patterns: list[dict[str, Any]] = rules.get("operational_card_patterns", [])
@@ -231,16 +265,23 @@ def _classify_with_new_schema(
 
         elif ptype == "sheet_keyword":
             keywords = pattern_def.get("keywords", [])
-            for kw in keywords:
-                if kw.lower() in name_lower:
-                    return "operational_card", format_group
+            if sheet_content:
+                content_lower = sheet_content.lower()
+                for kw in keywords:
+                    if kw.lower() in content_lower:
+                        return "operational_card", format_group
+            else:
+                for kw in keywords:
+                    if kw.lower() in name_lower:
+                        return "operational_card", format_group
 
-    # ── Heuristic fallbacks (same as legacy) ────────────────────────
-    if re.match(r"^(?:[A-Za-z]{1,3})?\d{2,}", name_lower):
-        return "operational_card", None
+    # ── Heuristic fallbacks (only when no explicit operational_card_patterns) ──
+    if not op_patterns:
+        if re.match(r"^(?:[A-Za-z]{1,3})?\d{2,}", name_lower):
+            return "operational_card", None
 
-    if re.match(r"^[a-z0-9]+-[a-z0-9]*-as-\d+", name_lower):
-        return "operational_card", None
+        if re.match(r"^[a-z0-9]+-[a-z0-9]*-as-\d+", name_lower):
+            return "operational_card", None
 
     return "unknown", None
 
@@ -455,6 +496,39 @@ class CardParserService:
         """
         return classify_file_with_format(filename, self._classification_rules)
 
+    def classify_with_format_and_content(
+        self, filename: str, data: bytes
+    ) -> tuple[str, str | None]:
+        """Classify a file, checking sheet content for sheet_keyword patterns.
+
+        Extracts cell values from the first 30 rows and passes them to the
+        classifier so that sheet_keyword patterns can match actual sheet data.
+        """
+        content = self._extract_sheet_content(data, max_rows=30)
+        return classify_file_with_content(
+            filename, self._classification_rules, sheet_content=content
+        )
+
+    def _extract_sheet_content(self, data: bytes, max_rows: int = 30) -> str:
+        """Extract cell values from the first rows of the first sheet."""
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        except Exception:
+            return ""
+        try:
+            if not wb.sheetnames:
+                return ""
+            ws = wb[wb.sheetnames[0]]
+            parts: list[str] = []
+            for row_idx in range(1, min(max_rows + 1, (ws.max_row or 0) + 1)):
+                for col_idx in range(1, min(40, (ws.max_column or 0) + 1)):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    if cell.value is not None:
+                        parts.append(str(cell.value).strip())
+            return " ".join(parts)
+        finally:
+            wb.close()
+
     def parse_card(self, data: bytes, filename: str) -> MLCardParseResult:
         """Parse an operational card XLSX from raw bytes.
 
@@ -468,7 +542,7 @@ class CardParserService:
         Raises:
             ValueError: If the file cannot be opened as XLSX.
         """
-        file_type, format_group = self.classify_with_format(filename)
+        file_type, format_group = self.classify_with_format_and_content(filename, data)
         if file_type == "service":
             return MLCardParseResult(
                 file_name=filename,
@@ -478,6 +552,10 @@ class CardParserService:
                 original_part_numbers={},
             )
         if file_type == "unknown":
+            # Try auto-detection for unknown files: scan headers for common patterns
+            result = self._try_auto_detect_and_parse(data, filename)
+            if result is not None:
+                return result
             logger.warning("Unknown file type, skipping: %s", filename)
             return MLCardParseResult(
                 file_name=filename,
@@ -489,12 +567,98 @@ class CardParserService:
 
         # Resolve format-specific config for this file
         tb, columns = self._resolve_format_config(format_group)
-        return self._parse_operational_card(data, filename, tb, columns)
+        result = self._parse_operational_card(data, filename, tb, columns)
+
+        # If parsing produced no parts (mapping didn't fit), try auto-detection
+        if not result.parts and result.error:
+            logger.info(
+                "Mapping config failed for %s (%s), trying auto-detect",
+                filename, result.error,
+            )
+            auto_result = self._try_auto_detect_and_parse(data, filename)
+            if auto_result is not None:
+                return auto_result
+
+        return result
 
     # ------------------------------------------------------------------
     # Internal helpers
 
     # ------------------------------------------------------------------
+
+    def _try_auto_detect_and_parse(
+        self, data: bytes, filename: str
+    ) -> MLCardParseResult | None:
+        """Try to auto-detect column layout for unknown file types.
+
+        Scans the first sheet's header row for common patterns:
+        - Part number: 零件号, part_no, part number, 物料号, 料号, 编号
+        - Quantity: 数量, qty, quantity, 用量, 需求量
+        - Name: 名称, name, 零件名称, 物料名称, 描述
+
+        If at least part_no and qty are found, parse the file using detected columns.
+        Returns None if auto-detection fails.
+        """
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        except Exception:
+            return None
+
+        try:
+            if not wb.sheetnames:
+                return None
+            ws = wb[wb.sheetnames[0]]
+
+            # Read first 30 rows to find headers (extended for cards with headers deep in the sheet)
+            header_row = 1
+            detected: dict[str, int] = {}
+            for row_idx in range(1, min(31, ws.max_row or 1) + 1):
+                row_vals: dict[int, str] = {}
+                for col_idx in range(1, min(30, (ws.max_column or 0) + 1)):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    if cell.value is not None:
+                        row_vals[col_idx] = str(cell.value).strip().lower()
+
+                # Check for known header patterns
+                found: dict[str, int] = {}
+                for col_idx, text in row_vals.items():
+                    if any(kw in text for kw in ("零件号", "part_no", "part number", "物料号", "料号", "编号", "part no")):
+                        found["part_no"] = col_idx
+                    elif any(kw in text for kw in ("数量", "qty", "quantity", "用量", "需求量")):
+                        found["qty"] = col_idx
+                    elif any(kw in text for kw in ("名称", "name", "零件名称", "物料名称", "描述")):
+                        found["name"] = col_idx
+
+                if len(found) >= 2:  # Need at least part_no + qty
+                    detected = found
+                    header_row = row_idx
+                    break
+
+            if "part_no" not in detected or "qty" not in detected:
+                return None
+
+            logger.info(
+                "Auto-detected columns for %s: %s (header row %d)",
+                filename, detected, header_row,
+            )
+
+            # Parse with auto-detected columns
+            columns = {}
+            for key, col_idx in detected.items():
+                columns[key] = {"col_index": col_idx, "header": key, "confidence": 0.5}
+
+            tb = {
+                "header_rows": [header_row],
+                "data_start_row": header_row + 1,
+                "end_markers": [],
+            }
+
+            result = self._parse_operational_card(data, filename, tb, columns)
+            result.file_type = "operational_card"  # Override from "unknown"
+            return result
+
+        finally:
+            wb.close()
 
     def _parse_operational_card(
         self,
@@ -556,21 +720,43 @@ class CardParserService:
         # multi-card sheet in the same workbook.
         self._last_card_boundaries = None
 
-        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
         try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+        except Exception as load_err:
+            logger.warning(
+                "Cannot open workbook %s: %s. Returning empty result.",
+                filename,
+                load_err,
+            )
+            return MLCardParseResult(
+                file_name=filename,
+                file_type="operational_card",
+                parts=[],
+                aggregated_parts={},
+                original_part_numbers={},
+                error=f"Cannot open workbook: {load_err}",
+            )
+        try:
+            sheets_skipped = False
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
-                # Validate column indices against max_column
+                # Skip empty or very small sheets (e.g. Sheet3 with 1 row)
+                if (ws.max_row or 0) < 2 or (ws.max_column or 0) < 2:
+                    continue
+                # Validate column indices against max_column — skip sheet if columns out of range
                 if ws.max_column:
                     if part_no_col > ws.max_column:
-                        validation_error = f"part_no column index {part_no_col} exceeds sheet max column {ws.max_column}"
-                        break
+                        logger.debug("Skipping sheet '%s': part_no col %d > max %d", sheet_name, part_no_col, ws.max_column)
+                        sheets_skipped = True
+                        continue
                     if qty_col > 0 and qty_col > ws.max_column:
-                        validation_error = f"qty column index {qty_col} exceeds sheet max column {ws.max_column}"
-                        break
+                        logger.debug("Skipping sheet '%s': qty col %d > max %d", sheet_name, qty_col, ws.max_column)
+                        sheets_skipped = True
+                        continue
                     if name_col > 0 and name_col > ws.max_column:
-                        validation_error = f"name column index {name_col} exceeds sheet max column {ws.max_column}"
-                        break
+                        logger.debug("Skipping sheet '%s': name col %d > max %d", sheet_name, name_col, ws.max_column)
+                        sheets_skipped = True
+                        continue
 
                 sheet_parts = self._extract_parts_from_sheet(
                     ws,
@@ -593,32 +779,36 @@ class CardParserService:
 
             # Check if 0 parts were parsed from sheets that have substantial content
             if not parts and not validation_error:
-                has_content = False
-                for sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    non_empty_rows = 0
-                    max_scan = min(ws.max_row or 0, 100)
-                    max_col_check = min(ws.max_column or 0, 20)
-                    for r in range(1, max_scan + 1):
-                        row_has_val = False
-                        for c in range(1, max_col_check + 1):
-                            try:
-                                v = ws.cell(row=r, column=c).value
-                                if v is not None and str(v).strip():
-                                    row_has_val = True
+                # If sheets were skipped due to column out of bounds, trigger auto-detection
+                if sheets_skipped:
+                    validation_error = "Column indices out of range for some sheets, trying auto-detect"
+                else:
+                    has_content = False
+                    for sheet_name in wb.sheetnames:
+                        ws = wb[sheet_name]
+                        non_empty_rows = 0
+                        max_scan = min(ws.max_row or 0, 100)
+                        max_col_check = min(ws.max_column or 0, 20)
+                        for r in range(1, max_scan + 1):
+                            row_has_val = False
+                            for c in range(1, max_col_check + 1):
+                                try:
+                                    v = ws.cell(row=r, column=c).value
+                                    if v is not None and str(v).strip():
+                                        row_has_val = True
+                                        break
+                                except Exception:
+                                    pass
+                            if row_has_val:
+                                non_empty_rows += 1
+                                if non_empty_rows >= 10:
+                                    has_content = True
                                     break
-                            except Exception:
-                                pass
-                        if row_has_val:
-                            non_empty_rows += 1
-                            if non_empty_rows >= 10:
-                                has_content = True
-                                break
-                    if has_content:
-                        break
+                        if has_content:
+                            break
 
-                if has_content:
-                    validation_error = "No parts extracted from non-empty worksheet. Check mapping config columns."
+                    if has_content:
+                        validation_error = "No parts extracted from non-empty worksheet. Check mapping config columns."
         finally:
             wb.close()
 
@@ -825,17 +1015,29 @@ class CardParserService:
             card_start = row_idx
 
             # Determine where the parts table starts within this card.
-            # parts_data_start_row is a 1-based relative offset from card_start.
-            #   parts_data_start_row=1 → data starts at card_start (first row of card)
-            #   parts_data_start_row=2 → data starts at card_start + 1 (skip 1 header row)
-            # If parts_data_start_row is absent, fall back to parts_header_row + 1.
-            if parts_data_start > 0:
-                actual_data_start = card_start + parts_data_start - 1
-            elif parts_header_row > 0:
-                actual_data_start = card_start + parts_header_row
-            else:
-                # Default: skip 1 row (assume header at card_start)
-                actual_data_start = card_start + 1
+            # First try: scan forward from card_start to find the parts table
+            # header (a row where part_no_col contains a known header like
+            # "零部件代号" or "序号").  This handles cards where the operation
+            # description section has variable length.
+            actual_data_start = 0
+            header_keywords = {"零部件代号", "零件号", "part_no", "序号", "料号", "物料号"}
+            for scan_row in range(card_start, min(card_start + 50, max_row + 1)):
+                raw_val = self._cell_value(ws, scan_row, part_no_col)
+                if raw_val is not None:
+                    val_str = str(raw_val).strip()
+                    if val_str in header_keywords:
+                        # Found parts header row; data starts on the next row
+                        actual_data_start = scan_row + 1
+                        break
+
+            # Fallback: use fixed offset from config
+            if actual_data_start == 0:
+                if parts_data_start > 0:
+                    actual_data_start = card_start + parts_data_start - 1
+                elif parts_header_row > 0:
+                    actual_data_start = card_start + parts_header_row
+                else:
+                    actual_data_start = card_start + 1
 
             # Find the end of this card (empty row or end marker)
             card_end = self._find_card_end(

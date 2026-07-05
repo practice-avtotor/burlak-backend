@@ -58,6 +58,24 @@ def aggregate(self: Task, job_id: int) -> None:
             "BOM parsed: %d parts, %d configs", len(bom.parts), len(bom.config_names)
         )
 
+        # If config-based parsing found 0 parts, try auto-detection
+        if len(bom.parts) == 0:
+            logger.warning(
+                "Config-based BOM parsing found 0 parts for job %d, "
+                "trying auto-detection", job_id,
+            )
+            from app.services.bom_parser_service import auto_detect_bom_sheets
+            auto_sheets = auto_detect_bom_sheets(bom_path)
+            if auto_sheets:
+                logger.info(
+                    "Auto-detected %d BOM sheets, retrying parse", len(auto_sheets)
+                )
+                bom = parse_bom(bom_path, sheets_config=auto_sheets)
+                logger.info(
+                    "BOM re-parsed: %d parts, %d configs",
+                    len(bom.parts), len(bom.config_names),
+                )
+
         # 2. Load cards data from JSON files
         job_dir = os.path.join(settings.storage_path, str(job_id))
         cards_dir = os.path.join(job_dir, "card_materials")
@@ -66,6 +84,7 @@ def aggregate(self: Task, job_id: int) -> None:
         all_parts: dict[str, float] = {}
         original_part_numbers: dict[str, str] = {}
         part_names_ru: dict[str, str] = {}
+        part_sources: dict[str, list[tuple[str, str, float]]] = {}
 
         if os.path.exists(cards_dir):
             for fpath in sorted(Path(cards_dir).glob("**/*.json")):
@@ -105,6 +124,10 @@ def aggregate(self: Task, job_id: int) -> None:
                         original_part_numbers[norm_pn] = part_no
                     if name_ru:
                         part_names_ru[norm_pn] = name_ru
+                    # Track which cards contain each part (for report)
+                    if norm_pn not in part_sources:
+                        part_sources[norm_pn] = []
+                    part_sources[norm_pn].append((card_no, p["sheet_name"], qty))
 
                 card_results.append(
                     CardParseResult(
@@ -128,6 +151,7 @@ def aggregate(self: Task, job_id: int) -> None:
             all_parts=all_parts,
             original_part_numbers=original_part_numbers,
             part_names_ru=part_names_ru,
+            part_sources=part_sources,
             card_results=card_results,
             total_cards_processed=len(card_results),
             total_sheets_processed=sum(len(cr.sheets) for cr in card_results),
@@ -146,6 +170,20 @@ def aggregate(self: Task, job_id: int) -> None:
             len(card_results),
             len(failed_cards),
         )
+
+        # 3b. Check if we got any useful data at all
+        if len(bom.parts) == 0 and len(card_results) == 0:
+            error_msg = (
+                "Fallback mapping не подходит к загруженным файлам. "
+                "BOM: 0 деталей, Карты: 0 обработано. "
+                "См. JSON-запросы в /data/requests/{job_id}/ — "
+                "подготовьте mapping_config.json вручную."
+            )
+            logger.error("Job %d: %s", job_id, error_msg)
+            sync_repository.update_job_status(
+                job_id, "error", stage="aggregating", error=error_msg
+            )
+            return
 
         # 4. Compare all configs
         logger.info("Comparing BOM vs Cards via legacy matching engine")
@@ -181,5 +219,8 @@ def aggregate(self: Task, job_id: int) -> None:
     except Exception as exc:
         logger.error("Aggregation failed for job %d: %s", job_id, exc, exc_info=True)
         if self.request.retries >= self.max_retries:
-            sync_repository.update_job_status(job_id, "error", "aggregating_failed")
+            sync_repository.update_job_status(
+                job_id, "error", stage="aggregating_failed", error=str(exc)
+            )
+            return
         raise self.retry(exc=exc)

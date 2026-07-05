@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     redis_health_check_interval: int = 30
     redis_cache_ttl: int = 5
 
+    # API authentication — static key checked in middleware + nginx.
+    # If empty, auth is disabled (useful for local dev).
+    api_key: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

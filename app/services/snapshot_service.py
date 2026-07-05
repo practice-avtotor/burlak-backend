@@ -37,6 +37,10 @@ def extract_snapshot_from_bytes(
     (capped at 200 columns) so the ML service can determine table layout
     without seeing the full file.
 
+    Compact format optimizations:
+      - Trailing null columns are trimmed from each row.
+      - Completely empty rows are skipped.
+
     Args:
         data: Raw bytes of the XLSX file.
         filename: Original filename (used for logging/metadata only).
@@ -49,7 +53,8 @@ def extract_snapshot_from_bytes(
               - ``name``: sheet title.
               - ``max_row``: total rows in the sheet.
               - ``max_column``: total columns (capped at 200 in snapshot).
-              - ``rows``: list of rows, each row is a list of cell values.
+              - ``rows``: list of rows, each row is a list of cell values
+                (trailing nulls trimmed, empty rows omitted).
     """
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     try:
@@ -69,6 +74,15 @@ def extract_snapshot_from_bytes(
                     if val is not None and not isinstance(val, (int, float, str, bool)):
                         val = str(val)
                     row_values.append(val)
+
+                # Trim trailing null columns
+                while row_values and row_values[-1] is None:
+                    row_values.pop()
+
+                # Skip completely empty rows
+                if not row_values:
+                    continue
+
                 rows.append(row_values)
 
             sheets_snapshot.append(

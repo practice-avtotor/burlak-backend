@@ -66,6 +66,7 @@ async def test_job_creation_success(temp_db_path: str) -> None:
         job = await JobCreationService.create(async_db)
         assert job["id"] > 0
         assert job["status"] == "awaiting_upload"
+        assert "session_token" in job
 
 
 @pytest.mark.asyncio
@@ -103,7 +104,8 @@ async def test_file_service_upload_chunk_status_check(
 ) -> None:
     """Test upload_chunk fails if job status is not 'awaiting_upload'."""
     async with aiosqlite.connect(temp_db_path) as async_db:
-        job_id = await async_repository.create_job(async_db)
+        created = await async_repository.create_job(async_db)
+        job_id = created["id"]
         await async_repository.update_job_status(async_db, job_id, "processing", None)
 
         service = FileService(async_db)
@@ -118,7 +120,8 @@ async def test_file_service_upload_chunk_success(
 ) -> None:
     """Test successful chunk upload with idempotency check."""
     async with aiosqlite.connect(temp_db_path) as async_db:
-        job_id = await async_repository.create_job(async_db)
+        created = await async_repository.create_job(async_db)
+        job_id = created["id"]
         service = FileService(async_db)
 
         # Upload first time (writes chunk)
@@ -153,7 +156,8 @@ async def test_file_service_complete_file_upload_errors(
             await service.complete_file_upload(999, "bom")
 
         # 3. No chunks found
-        job_id = await async_repository.create_job(async_db)
+        created = await async_repository.create_job(async_db)
+        job_id = created["id"]
         with pytest.raises(FileUploadError):
             await service.complete_file_upload(job_id, "bom")
 
@@ -165,7 +169,8 @@ async def test_file_service_complete_file_upload_success(
 ) -> None:
     """Test successful assembly of chunks and database updates."""
     async with aiosqlite.connect(temp_db_path) as async_db:
-        job_id = await async_repository.create_job(async_db)
+        created = await async_repository.create_job(async_db)
+        job_id = created["id"]
         service = FileService(async_db)
 
         # Upload 2 chunks
@@ -206,7 +211,8 @@ async def test_job_processing_transition_errors(
             await JobProcessingService.transition_to_processing(async_db, 999)
 
         # 2. Files not uploaded
-        job_id = await async_repository.create_job(async_db)
+        created = await async_repository.create_job(async_db)
+        job_id = created["id"]
         with pytest.raises(JobStateError):
             await JobProcessingService.transition_to_processing(async_db, job_id)
 
@@ -230,7 +236,8 @@ async def test_job_processing_transition_success(
 ) -> None:
     """Test successful transition to processing state."""
     async with aiosqlite.connect(temp_db_path) as async_db:
-        job_id = await async_repository.create_job(async_db)
+        created = await async_repository.create_job(async_db)
+        job_id = created["id"]
         await async_repository.update_file_upload(
             async_db, job_id, "bom", "/data/bom.xlsx", True
         )
@@ -251,9 +258,14 @@ async def test_job_processing_transition_success(
 
 def test_job_processing_dispatch() -> None:
     """Test that dispatch_processing triggers successfully."""
-    with patch("app.worker.tasks.unpack.unpack.delay") as mock_delay:
+    with (
+        patch("app.worker.tasks.unpack.unpack.delay") as mock_delay,
+        patch("app.services.job_processing_service.sync_repository.set_celery_task_id") as mock_set_tid,
+    ):
+        mock_delay.return_value = type("Result", (), {"id": "fake-task-id"})()
         JobProcessingService.dispatch_processing(1)
         mock_delay.assert_called_once_with(1)
+        mock_set_tid.assert_called_once_with(1, "fake-task-id")
 
 
 # ----------------------------------------------------------------------
@@ -272,7 +284,8 @@ async def test_result_service_validate_job_ready(
             await ResultService.validate_job_ready(async_db, 999)
 
         # 2. Not ready (status is processing)
-        job_id = await async_repository.create_job(async_db)
+        created = await async_repository.create_job(async_db)
+        job_id = created["id"]
         await async_repository.update_job_status(async_db, job_id, "processing", None)
         with pytest.raises(ResultsNotReadyError):
             await ResultService.validate_job_ready(async_db, job_id)

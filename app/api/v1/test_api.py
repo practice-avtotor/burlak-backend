@@ -12,6 +12,9 @@ from app.core.config import get_settings
 from app.db.database import Base, get_async_db
 from app.main import app
 
+# Token used for all tests that seed jobs via raw SQL (must match X-Session-Token header)
+_TEST_TOKEN = "test-session-token-for-unit-tests"
+
 
 @pytest.fixture(autouse=True)
 def _mock_redis() -> Generator[None, None, None]:
@@ -130,6 +133,8 @@ def test_create_job(api_client: TestClient) -> None:
     assert "id" in data
     assert data["status"] == "awaiting_upload"
     assert "created_at" in data
+    assert "session_token" in data
+    assert len(data["session_token"]) > 0
 
 
 def test_get_job_status_success(api_client: TestClient, temp_db_path: str) -> None:
@@ -138,8 +143,9 @@ def test_get_job_status_success(api_client: TestClient, temp_db_path: str) -> No
     conn = sqlite3.connect(temp_db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            _TEST_TOKEN,
             "awaiting_upload",
             0,
             0,
@@ -155,7 +161,7 @@ def test_get_job_status_success(api_client: TestClient, temp_db_path: str) -> No
     conn.close()
 
     assert job_id is not None
-    response = api_client.get(f"/api/v1/jobs/{job_id}")
+    response = api_client.get(f"/api/v1/jobs/{job_id}", headers={"X-Session-Token": _TEST_TOKEN})
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == job_id
@@ -164,8 +170,8 @@ def test_get_job_status_success(api_client: TestClient, temp_db_path: str) -> No
 
 
 def test_get_job_status_not_found(api_client: TestClient) -> None:
-    """Test fetching job status of a non-existent job."""
-    response = api_client.get("/api/v1/jobs/99999")
+    """Test fetching job status of a non-existent job returns 404."""
+    response = api_client.get("/api/v1/jobs/99999", headers={"X-Session-Token": _TEST_TOKEN})
     assert response.status_code == 404
     data = response.json()
     assert data["error"]["code"] == "JOB_NOT_FOUND"
@@ -180,8 +186,9 @@ def test_start_job_processing_success(
     conn = sqlite3.connect(temp_db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, bom_path, archive_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, bom_path, archive_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            _TEST_TOKEN,
             "awaiting_upload",
             0,
             0,
@@ -202,13 +209,13 @@ def test_start_job_processing_success(
     with patch(
         "app.services.job_processing_service.JobProcessingService.dispatch_processing"
     ) as mock_dispatch:
-        response = api_client.post(f"/api/v1/jobs/{job_id}/start")
+        response = api_client.post(f"/api/v1/jobs/{job_id}/start", headers={"X-Session-Token": _TEST_TOKEN})
         assert response.status_code == 202
         data = response.json()
         assert data["job_id"] == job_id
         assert data["status"] == "processing"
         assert data["stage"] == "unpacking"
-        mock_dispatch.assert_called_once_with(job_id)
+        mock_dispatch.assert_called_once_with(job_id, mode="heuristic")
 
 
 def test_start_job_processing_validation_error(
@@ -219,8 +226,9 @@ def test_start_job_processing_validation_error(
     conn = sqlite3.connect(temp_db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            _TEST_TOKEN,
             "awaiting_upload",
             0,
             0,
@@ -236,7 +244,7 @@ def test_start_job_processing_validation_error(
     conn.close()
 
     assert job_id is not None
-    response = api_client.post(f"/api/v1/jobs/{job_id}/start")
+    response = api_client.post(f"/api/v1/jobs/{job_id}/start", headers={"X-Session-Token": _TEST_TOKEN})
     assert response.status_code == 409
     data = response.json()
     assert data["error"]["code"] == "INVALID_JOB_STATE"
@@ -257,8 +265,9 @@ def test_upload_chunk(
     conn = sqlite3.connect(temp_db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            _TEST_TOKEN,
             "awaiting_upload",
             0,
             0,
@@ -277,7 +286,7 @@ def test_upload_chunk(
     response = api_client.put(
         f"/api/v1/jobs/{job_id}/files/bom/chunks/0",
         content=b"chunk content data",
-        headers={"X-Total-Chunks": "1"},
+        headers={"X-Total-Chunks": "1", "X-Session-Token": _TEST_TOKEN},
     )
     assert response.status_code == 200
     data = response.json()
@@ -296,8 +305,9 @@ def test_complete_file_upload(
     conn = sqlite3.connect(temp_db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            _TEST_TOKEN,
             "awaiting_upload",
             0,
             0,
@@ -318,11 +328,11 @@ def test_complete_file_upload(
     api_client.put(
         f"/api/v1/jobs/{job_id}/files/bom/chunks/0",
         content=b"file content",
-        headers={"X-Total-Chunks": "1"},
+        headers={"X-Total-Chunks": "1", "X-Session-Token": _TEST_TOKEN},
     )
 
     # 2. Complete upload
-    response = api_client.post(f"/api/v1/jobs/{job_id}/files/bom/complete")
+    response = api_client.post(f"/api/v1/jobs/{job_id}/files/bom/complete", headers={"X-Session-Token": _TEST_TOKEN})
     assert response.status_code == 200
     data = response.json()
     assert data["role"] == "bom"
@@ -341,22 +351,23 @@ def test_download_results_not_ready(api_client: TestClient, temp_db_path: str) -
     conn = sqlite3.connect(temp_db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ("processing", 0, 0, 0, 1, 1, "2026-06-22T00:00:00", "2026-06-22T00:00:00"),
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (_TEST_TOKEN, "processing", 0, 0, 0, 1, 1, "2026-06-22T00:00:00", "2026-06-22T00:00:00"),
     )
     job_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
     assert job_id is not None
+    _h = {"X-Session-Token": _TEST_TOKEN}
 
     # Try diff download
-    response = api_client.get(f"/api/v1/jobs/{job_id}/results/diff")
+    response = api_client.get(f"/api/v1/jobs/{job_id}/results/diff", headers=_h)
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "RESULTS_NOT_READY"
 
     # Try cards download
-    response2 = api_client.get(f"/api/v1/jobs/{job_id}/results/cards")
+    response2 = api_client.get(f"/api/v1/jobs/{job_id}/results/cards", headers=_h)
     assert response2.status_code == 409
     assert response2.json()["error"]["code"] == "RESULTS_NOT_READY"
 
@@ -371,14 +382,15 @@ def test_download_results_success(
     conn = sqlite3.connect(temp_db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ("done", 0, 0, 0, 1, 1, "2026-06-22T00:00:00", "2026-06-22T00:00:00"),
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (_TEST_TOKEN, "done", 0, 0, 0, 1, 1, "2026-06-22T00:00:00", "2026-06-22T00:00:00"),
     )
     job_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
     assert job_id is not None
+    _h = {"X-Session-Token": _TEST_TOKEN}
 
     # Write dummy files to job directory
     job_dir = mock_storage_path / str(job_id)
@@ -389,7 +401,7 @@ def test_download_results_success(
     cards_file.write_bytes(b"dummy zip cards data")
 
     # Download diff
-    response = api_client.get(f"/api/v1/jobs/{job_id}/results/diff")
+    response = api_client.get(f"/api/v1/jobs/{job_id}/results/diff", headers=_h)
     assert response.status_code == 200
     assert response.content == b"dummy excel report data"
     assert (
@@ -398,7 +410,51 @@ def test_download_results_success(
     )
 
     # Download cards
-    response2 = api_client.get(f"/api/v1/jobs/{job_id}/results/cards")
+    response2 = api_client.get(f"/api/v1/jobs/{job_id}/results/cards", headers=_h)
     assert response2.status_code == 200
     assert response2.content == b"dummy zip cards data"
     assert response2.headers["content-type"] == "application/zip"
+
+
+# ----------------------------------------------------------------------
+# Session Isolation Tests
+# ----------------------------------------------------------------------
+
+def test_job_forbidden_wrong_token(
+    api_client: TestClient, temp_db_path: str
+) -> None:
+    """Wrong session token must return 403 JOB_FORBIDDEN."""
+    conn = sqlite3.connect(temp_db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (_TEST_TOKEN, "awaiting_upload", 0, 0, 0, 0, 0, "2026-06-22T00:00:00", "2026-06-22T00:00:00"),
+    )
+    job_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    assert job_id is not None
+    resp = api_client.get(f"/api/v1/jobs/{job_id}", headers={"X-Session-Token": "wrong-token"})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "JOB_FORBIDDEN"
+
+
+def test_job_forbidden_missing_token(
+    api_client: TestClient, temp_db_path: str
+) -> None:
+    """Missing session token must return 403 JOB_FORBIDDEN."""
+    conn = sqlite3.connect(temp_db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (_TEST_TOKEN, "awaiting_upload", 0, 0, 0, 0, 0, "2026-06-22T00:00:00", "2026-06-22T00:00:00"),
+    )
+    job_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    assert job_id is not None
+    resp = api_client.get(f"/api/v1/jobs/{job_id}")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "JOB_FORBIDDEN"

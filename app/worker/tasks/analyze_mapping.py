@@ -7,7 +7,7 @@ from celery import Task  # type: ignore[import-untyped]
 from app.core.config import get_settings
 from app.db import sync_repository
 from app.services.snapshot_service import extract_snapshot_from_bytes, group_by_format
-from app.services.structure_adapter import StructureAdapter
+from app.services.structure_adapter import ManualResponseNeededError, StructureAdapter
 from app.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,6 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                 f"No cards found for job {job_id} in DB. Transitioning to processing_cards stage."
             )
             sync_repository.update_job_status(job_id, "processing", "processing_cards")
-            # Trigger aggregation directly if there are no cards
             from app.worker.tasks.aggregate import aggregate
 
             aggregate.delay(job_id)
@@ -67,7 +66,6 @@ def analyze_mapping(self: Task, job_id: int) -> None:
                     logger.error(
                         f"Failed to read representative card {representative_path} for group {group_name}: {e}"
                     )
-                    # We still want to try to run ML analysis if possible with other cards
 
         # 5. Invoke ML Service to get mapping config
         logger.info(f"Invoking ML analyze-structure endpoint for job {job_id}")
@@ -76,6 +74,7 @@ def analyze_mapping(self: Task, job_id: int) -> None:
             "bom": [bom_snapshot],
             "sample_cards": card_snapshots,
             "options": {
+                "job_id": job_id,
                 "max_sample_rows": 300,
                 "total_cards_in_archive": len(card_paths),
             },
@@ -98,8 +97,27 @@ def analyze_mapping(self: Task, job_id: int) -> None:
         for card_path in card_paths:
             process_card.delay(job_id, card_path)
 
+    except ManualResponseNeededError as exc:
+        # Manual mode: no pre-prepared response file. Don't retry.
+        detail = exc.detail
+        # Use the message from ml-mock if available
+        ml_message = detail.get("message", str(exc)) if isinstance(detail, dict) else str(exc)
+        error_msg = (
+            f"AI-анализ не выполнен (job {job_id}). "
+            f"{ml_message}"
+        )
+        logger.error(error_msg)
+        sync_repository.update_job_status(
+            job_id,
+            "error",
+            stage="ml_manual_response_needed",
+            error=error_msg,
+        )
+        return  # Don't retry — manual action required
+
     except Exception as exc:
         logger.error(f"Analyze mapping failed for job {job_id}: {exc}", exc_info=True)
         if self.request.retries >= self.max_retries:
-            sync_repository.update_job_status(job_id, "error")
+            sync_repository.update_job_status(job_id, "error", error=str(exc))
+            return
         raise self.retry(exc=exc)

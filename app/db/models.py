@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey
+from sqlalchemy import JSON, ForeignKey, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -11,6 +11,8 @@ class Jobs(Base):
     __tablename__ = "jobs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_token: Mapped[str] = mapped_column(nullable=False, default="")
+    mode: Mapped[str] = mapped_column(nullable=False, server_default=text("'heuristic'"), default="heuristic")
     status: Mapped[str] = mapped_column(nullable=False, default="awaiting_upload")
     stage: Mapped[str] = mapped_column(nullable=True)
 
@@ -19,11 +21,14 @@ class Jobs(Base):
     failed: Mapped[int] = mapped_column(nullable=False, default=0)
 
     mapping_config: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    selected_config: Mapped[str | None] = mapped_column(nullable=True)
 
     bom_path: Mapped[str | None] = mapped_column(nullable=True)
     archive_path: Mapped[str | None] = mapped_column(nullable=True)
     bom_uploaded: Mapped[bool] = mapped_column(nullable=False, default=False)
     archive_uploaded: Mapped[bool] = mapped_column(nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(nullable=True)
+    celery_task_id: Mapped[str | None] = mapped_column(nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         nullable=False, default=lambda: datetime.now(UTC)

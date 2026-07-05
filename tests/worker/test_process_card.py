@@ -55,10 +55,10 @@ def test_process_card_task_no_raise_on_exhausted_retries(
     conn = sqlite3.connect(temp_db_path)
     conn.execute(
         """
-        INSERT INTO jobs (id, status, stage, bom_path, archive_path, processed, failed, total, bom_uploaded, archive_uploaded, created_at, updated_at)
-        VALUES (?, 'processing', 'parsing', 'bom.xlsx', 'archive.zip', 0, 0, 1, 1, 1, ?, ?)
+        INSERT INTO jobs (id, session_token, status, stage, bom_path, archive_path, processed, failed, total, bom_uploaded, archive_uploaded, created_at, updated_at)
+        VALUES (?, ?, 'processing', 'parsing', 'bom.xlsx', 'archive.zip', 0, 0, 1, 1, 1, ?, ?)
         """,
-        (job_id, now, now),
+        (job_id, "test-token-process-card-1", now, now),
     )
     conn.execute(
         """
@@ -132,10 +132,10 @@ def test_process_card_task_retries_if_remaining(temp_db_path: str) -> None:
     conn = sqlite3.connect(temp_db_path)
     conn.execute(
         """
-        INSERT INTO jobs (id, status, stage, bom_path, archive_path, processed, failed, total, bom_uploaded, archive_uploaded, created_at, updated_at)
-        VALUES (?, 'processing', 'parsing', 'bom.xlsx', 'archive.zip', 0, 0, 1, 1, 1, ?, ?)
+        INSERT INTO jobs (id, session_token, status, stage, bom_path, archive_path, processed, failed, total, bom_uploaded, archive_uploaded, created_at, updated_at)
+        VALUES (?, ?, 'processing', 'parsing', 'bom.xlsx', 'archive.zip', 0, 0, 1, 1, 1, ?, ?)
         """,
-        (job_id, now, now),
+        (job_id, "test-token-process-card-2", now, now),
     )
     conn.execute(
         """

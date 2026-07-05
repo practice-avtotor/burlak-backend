@@ -1,13 +1,26 @@
+"""ML Service stub for local development — embedded in backend container.
+
+Provides mock responses for:
+  - POST /api/v1/analyze-structure: structural analysis of BOM and card XLSX files
+  - POST /api/v1/translate: batch translation of Chinese text to Russian
+
+Used via ``docker-compose.dev.yml`` profile ``mock``.
+"""
+
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 
 app = FastAPI(title="ML Service Mock Stub")
 
 
 @app.post("/api/v1/analyze-structure")
-async def analyze_structure(request: Request) -> dict[str, Any]:
-    """Mock structure analysis endpoint returning a default mapping config."""
+async def analyze_structure(payload: dict[str, Any]) -> dict[str, Any]:
+    """Mock structure analysis endpoint returning a default mapping config.
+
+    Accepts: {"bom": [...], "sample_cards": [...], "options": {...}}
+    Returns: {"status": "success", "mapping_config": {...}}
+    """
     return {
         "status": "success",
         "mapping_config": {
@@ -77,17 +90,17 @@ async def analyze_structure(request: Request) -> dict[str, Any]:
                     "operational_card_patterns": [
                         {
                             "type": "filename_regex",
-                            "pattern": "^[A-Za-z0-9]+-[A-Za-z0-9]*-AS-\\d+",
+                            "pattern": r"^[A-Za-z0-9]+-[A-Za-z0-9]*-AS-\d+",
                             "format_group": "card_format_A",
                         },
                         {
                             "type": "filename_regex",
-                            "pattern": "^[A-Za-z]{1,3}\\d{2,}",
+                            "pattern": r"^[A-Za-z]{1,3}\d{2,}",
                             "format_group": "card_format_A",
                         },
                         {
                             "type": "filename_regex",
-                            "pattern": "^\\d{2,}",
+                            "pattern": r"^\d{2,}",
                             "format_group": "card_format_A",
                         },
                         {
@@ -157,7 +170,11 @@ async def analyze_structure(request: Request) -> dict[str, Any]:
 
 @app.post("/api/v1/translate")
 async def translate(payload: dict[str, Any]) -> dict[str, Any]:
-    """Mock translation endpoint that prefixes translated texts."""
-    texts = payload.get("texts", [])
-    translations = [f"Translated {t}" for t in texts]
+    """Mock translation endpoint that prefixes translated texts.
+
+    Accepts: {"texts": [...], "source_lang": "zh", "target_lang": "ru"}
+    Returns: {"translations": [...]}
+    """
+    texts: list[str] = payload.get("texts", [])
+    translations = [f"[MOCK] {t}" for t in texts]
     return {"translations": translations}

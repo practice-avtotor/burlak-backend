@@ -58,7 +58,7 @@ def unpack(self: Task, job_id: int) -> None:
 
     except Exception as exc:
         logger.error(f"Unpack failed for job {job_id}: {exc}", exc_info=True)
-        # Attempt to mark the job as failed if error is unrecoverable or on final retry
         if self.request.retries >= self.max_retries:
-            sync_repository.update_job_status(job_id, "error")
+            sync_repository.update_job_status(job_id, "error", error=str(exc))
+            return
         raise self.retry(exc=exc)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -24,6 +25,32 @@ from app.services.structure_adapter import StructureAdapter
 from app.services.xls_converter import convert_xls_to_xlsx
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_name(name: str, max_bytes: int = 200) -> str:
+    """Truncate a filename component so it fits within *max_bytes* on disk.
+
+    Preserves the file extension.  Appends a short hash when truncation
+    occurs so that distinct long names don't collide.
+    """
+    encoded = name.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return name
+
+    # Preserve extension
+    base, ext = os.path.splitext(name)
+    ext_bytes = len(ext.encode("utf-8"))
+    # Budget for the hash suffix (8 hex chars = 8 bytes)
+    hash_suffix = "_" + hashlib.md5(encoded).hexdigest()[:8]
+    hash_bytes = len(hash_suffix.encode("utf-8"))
+    available = max_bytes - ext_bytes - hash_bytes
+    if available <= 0:
+        # Extension alone is too long — just truncate raw bytes
+        return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+    # Truncate the base name to fit
+    truncated = base.encode("utf-8")[:available].decode("utf-8", errors="ignore")
+    return truncated + hash_suffix + ext
 
 
 def extract_card_number(card_path: str) -> str:
@@ -73,8 +100,13 @@ class CardProcessingService:
 
         filename = os.path.basename(card_path)
 
-        # 2b. XLS conversion to XLSX via LibreOffice if needed
-        if card_path.lower().endswith(".xls"):
+        # 3. Classify card FIRST — use content-aware classification for sheet_keyword patterns
+        parser = CardParserService(mapping_config)
+        classification, format_group = parser.classify_with_format_and_content(filename, card_bytes)
+        logger.info(f"Card {card_path} classified as '{classification}' (format: {format_group})")
+
+        # 2b. XLS conversion to XLSX via LibreOffice — only for operational cards
+        if classification == "operational_card" and card_path.lower().endswith(".xls"):
             logger.info("Converting legacy XLS file to XLSX: %s", card_path)
             temp_xls_path = os.path.join(
                 job_dir, f"temp_{self.job_id}_{os.path.basename(card_path)}"
@@ -99,19 +131,19 @@ class CardProcessingService:
 
             filename = os.path.splitext(filename)[0] + ".xlsx"
 
-        # 3. Classify card
-        parser = CardParserService(mapping_config)
-        classification = parser.classify(filename)
-        logger.info(f"Card {card_path} classified as '{classification}'")
+            # Re-classify after XLS→XLSX conversion (filename changed)
+            parser = CardParserService(mapping_config)
+            classification, format_group = parser.classify_with_format_and_content(filename, card_bytes)
 
-        # Destination paths
+        # Destination paths — use _safe_name to avoid ENAMETOOLONG (255-byte limit)
+        safe_filename = _safe_name(filename)
         dest_xlsx_path = os.path.join(
-            translated_cards_dir, os.path.dirname(card_path), filename
+            translated_cards_dir, os.path.dirname(card_path), safe_filename
         )
         os.makedirs(os.path.dirname(dest_xlsx_path), exist_ok=True)
 
         card_materials_path = os.path.join(
-            card_materials_dir, os.path.dirname(card_path), f"{filename}.json"
+            card_materials_dir, os.path.dirname(card_path), f"{safe_filename}.json"
         )
         os.makedirs(os.path.dirname(card_materials_path), exist_ok=True)
 
@@ -126,7 +158,8 @@ class CardProcessingService:
             return
 
         # 3b. Handle Sheet Splitting for multi-sheet cards
-        temp_source_path = os.path.join(job_dir, f"split_src_{self.job_id}_{filename}")
+        # Use _safe_name for temp paths to avoid ENAMETOOLONG (255 byte limit)
+        temp_source_path = os.path.join(job_dir, f"split_src_{self.job_id}_{_safe_name(filename)}")
         os.makedirs(job_dir, exist_ok=True)
         with open(temp_source_path, "wb") as f:
             f.write(card_bytes)
@@ -158,8 +191,9 @@ class CardProcessingService:
                 len(sheets_to_split),
                 sheets_to_split,
             )
+            safe_stem = _safe_name(os.path.splitext(filename)[0])
             split_dir = os.path.join(
-                job_dir, "split_cards", os.path.splitext(filename)[0]
+                job_dir, "split_cards", safe_stem
             )
             splitter = CardSplitter(max_workers=1)
             try:
@@ -167,7 +201,7 @@ class CardProcessingService:
                     temp_source_path,
                     split_dir,
                     sheets_to_split,
-                    file_label=os.path.splitext(filename)[0],
+                    file_label=safe_stem,
                 )
             except Exception as e:
                 logger.error("Failed to split card %s: %s", filename, e, exc_info=True)
@@ -194,11 +228,12 @@ class CardProcessingService:
                     continue
 
                 sf_card_no = extract_card_number(sf_name)
+                sf_safe = _safe_name(sf_name)
                 sf_dest_xlsx_path = os.path.join(
-                    translated_cards_dir, os.path.dirname(card_path), sf_name
+                    translated_cards_dir, os.path.dirname(card_path), sf_safe
                 )
                 sf_card_materials_path = os.path.join(
-                    card_materials_dir, os.path.dirname(card_path), f"{sf_name}.json"
+                    card_materials_dir, os.path.dirname(card_path), f"{sf_safe}.json"
                 )
                 self._translate_and_save_card(
                     parts=sf_parse_result.parts,
@@ -209,11 +244,8 @@ class CardProcessingService:
                     name_col=parser.name_col,
                 )
 
-                # Cleanup temp split file
-                try:
-                    os.remove(sf)
-                except OSError:
-                    pass
+                # Note: split files are preserved in split_cards/ for user inspection.
+                # They are cleaned up only if the job directory is removed.
         else:
             # Single-sheet mode
             parse_result = parser.parse_card(card_bytes, filename)
@@ -298,20 +330,15 @@ class CardProcessingService:
             for p in parts
         ]
 
-        # Save translated workbook
+        # Save translated workbook — preserve images by saving original bytes.
+        # openpyxl.load_workbook() + wb.save() loses images/drawings because
+        # openpyxl's DrawingML support is incomplete.  Instead, save the
+        # original split bytes directly (which already contain images via
+        # ZIP manipulation in the splitter).  Translated names are stored
+        # in the materials JSON and can be applied in the report layer.
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        wb = openpyxl.load_workbook(io.BytesIO(card_bytes), data_only=False)
-        try:
-            for p in parts:
-                if p.name and name_col > 0:
-                    ws = wb[p.source_sheet]
-                    cell = ws.cell(row=p.row, column=name_col)
-                    if cell.font and cell.font.strike:
-                        continue
-                    cell.value = translations.get(p.name, p.name)
-            wb.save(dest_path)
-        finally:
-            wb.close()
+        with open(dest_path, "wb") as f:
+            f.write(card_bytes)
 
         # Save parts list as JSON
         os.makedirs(os.path.dirname(materials_path), exist_ok=True)
@@ -325,8 +352,9 @@ class CardProcessingService:
         card_materials_dir = os.path.join(job_dir, "card_materials")
 
         try:
+            safe_card = _safe_name(os.path.basename(card_path))
             error_materials_path = os.path.join(
-                card_materials_dir, f"{card_path}_error.json"
+                card_materials_dir, f"{safe_card}_error.json"
             )
             os.makedirs(os.path.dirname(error_materials_path), exist_ok=True)
             with open(error_materials_path, "w", encoding="utf-8") as f:
@@ -392,13 +420,14 @@ class CardProcessingService:
                 len(parts_group),
             )
 
+            sub_safe = _safe_name(sub_name)
             sub_dest_xlsx_path = os.path.join(
-                translated_cards_dir, os.path.dirname(card_path), sub_name
+                translated_cards_dir, os.path.dirname(card_path), sub_safe
             )
             sub_card_materials_path = os.path.join(
                 card_materials_dir,
                 os.path.dirname(card_path),
-                f"{sub_name}.json",
+                f"{sub_safe}.json",
             )
             self._translate_and_save_card(
                 parts=parts_group,
