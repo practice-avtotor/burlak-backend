@@ -26,13 +26,10 @@ import re
 import shutil
 import warnings
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
-from typing import Any
-
-_HAS_LXML = False
-_lxml_etree = None
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from typing import Any
 
 
 class ExcelSheet:
@@ -202,22 +199,6 @@ _LXML_NS = {
     "x": "urn:schemas-microsoft-com:office:excel",
     "pr": "http://schemas.microsoft.com/office/2006/relationships",
 }
-
-
-def _lxml_to_bytes(root, xml_declaration: bool = True) -> bytes:
-    """Serialize lxml element to bytes with MS Excel-compatible declaration.
-
-    Uses lxml.etree.tostring with proper encoding and standalone declaration.
-    Falls back to ElementTree if lxml is unavailable.
-    """
-    if _HAS_LXML:
-        return _lxml_etree.tostring(
-            root,
-            xml_declaration=xml_declaration,
-            encoding="UTF-8",
-            standalone=True,
-        )
-    return _serialize_xml(root, NS_MAIN)
 
 
 def _serialize_xml(
@@ -2305,136 +2286,77 @@ def _cleanup_workbook_for_single_sheet(
 
     Modifies all_entries in-place.
     """
-    # First, find the target rId from the existing workbook.xml.rels
-    target_rid = None
-    wb_rels_bytes = all_entries.get("xl/_rels/workbook.xml.rels")
-    if wb_rels_bytes is not None:
-        if _HAS_LXML:
-            try:
-                rels_root = _lxml_etree.fromstring(wb_rels_bytes)
-                # Find which rId maps to the worksheet that has our target sheet
-                wb_bytes = all_entries.get("xl/workbook.xml")
-                if wb_bytes is not None:
-                    wb_root = _lxml_etree.fromstring(wb_bytes)
-                    sheets = wb_root.find(f"{{{NS_MAIN}}}sheets")
-                    if sheets is not None:
-                        for sheet_el in sheets.findall(f"{{{NS_MAIN}}}sheet"):
-                            if sheet_el.get("name") == target_sheet_name:
-                                target_rid = sheet_el.get(f"{{{NS_R}}}id")
-                                break
-            except Exception:
-                pass
-
-    # Fix workbook.xml
     wb_bytes = all_entries.get("xl/workbook.xml")
     if wb_bytes is None:
         return
+    wb_text = wb_bytes.decode("utf-8")
 
-    if _HAS_LXML:
-        wb_root = _lxml_etree.fromstring(wb_bytes)
-        ns = NS_MAIN
-
-        # Fix bookViews: activeTab=0, firstSheet=0
-        book_views = wb_root.find(f"{{{ns}}}bookViews")
-        if book_views is not None:
-            wb_view = book_views.find(f"{{{ns}}}workbookView")
-            if wb_view is not None:
-                wb_view.set("activeTab", "0")
-                wb_view.set("firstSheet", "0")
-
-        # Fix sheets: keep only the target sheet, set sheetId=1
-        sheets = wb_root.find(f"{{{ns}}}sheets")
-        if sheets is not None:
-            to_remove = []
-            found_target = False
-            for sheet_el in sheets.findall(f"{{{ns}}}sheet"):
-                name = sheet_el.get("name", "")
-                if name == target_sheet_name and not found_target:
-                    sheet_el.set("sheetId", "1")
-                    found_target = True
-                else:
-                    to_remove.append(sheet_el)
-            for el in to_remove:
-                sheets.remove(el)
-
-        # Remove all definedName elements (they reference other sheets)
-        defined_names = wb_root.find(f"{{{ns}}}definedNames")
-        if defined_names is not None:
-            wb_root.remove(defined_names)
-
-        # Remove customWorkbookViews (can cause openpyxl parse errors)
-        custom_views = wb_root.find(f"{{{ns}}}customWorkbookViews")
-        if custom_views is not None:
-            wb_root.remove(custom_views)
-
-        all_entries["xl/workbook.xml"] = _lxml_etree.tostring(
-            wb_root, xml_declaration=True, encoding="UTF-8", standalone=True
-        )
-    else:
-        # Regex fallback
-        wb_text = wb_bytes.decode("utf-8")
-        wb_text = re.sub(r'activeTab="\d+"', 'activeTab="0"', wb_text)
-        wb_text = re.sub(r'firstSheet="\d+"', 'firstSheet="0"', wb_text)
-
-        def _replace_sheets(m: re.Match) -> str:
-            content = m.group(2)
-            kept = None
-            for sh in re.finditer(r"<sheet[^>]*/>", content):
-                name_m = re.search(r'name="([^"]+)"', sh.group(0))
-                if name_m and name_m.group(1) == target_sheet_name:
-                    kept = sh.group(0)
-                    break
-            if kept:
-                return f"{m.group(1)}\n{kept}\n{m.group(3)}"
-            return m.group(0)
-
-        wb_text = re.sub(
-            r"(<sheets[^>]*>)(.*?)(</sheets>)",
-            _replace_sheets,
+    # Find which rId maps to our target worksheet using regex
+    target_rid = None
+    rid_match = re.search(
+        r'name="' + re.escape(target_sheet_name) + r'"[^>]*r:id="([^"]+)"',
+        wb_text,
+    )
+    if not rid_match:
+        rid_match = re.search(
+            r'name="' + re.escape(target_sheet_name) + r'"[^>]*id="([^"]+)"',
             wb_text,
-            count=1,
-            flags=re.DOTALL,
         )
-        wb_text = re.sub(
-            r"<definedNames[^>]*>.*?</definedNames>", "", wb_text, flags=re.DOTALL
-        )
-        wb_text = re.sub(
-            r"<customWorkbookViews[^>]*>.*?</customWorkbookViews>",
-            "",
-            wb_text,
-            flags=re.DOTALL,
-        )
-        all_entries["xl/workbook.xml"] = wb_text.encode("utf-8")
+    if rid_match:
+        target_rid = rid_match.group(1)
+
+    # Fix workbook.xml
+    wb_text = re.sub(r'activeTab="\d+"', 'activeTab="0"', wb_text)
+    wb_text = re.sub(r'firstSheet="\d+"', 'firstSheet="0"', wb_text)
+
+    def _replace_sheets(m: re.Match) -> str:
+        content = m.group(2)
+        kept = None
+        for sh in re.finditer(r"<sheet[^>]*/>", content):
+            name_m = re.search(r'name="([^"]+)"', sh.group(0))
+            if name_m and name_m.group(1) == target_sheet_name:
+                kept = sh.group(0)
+                # Fix sheetId to 1
+                kept = re.sub(r'sheetId="\d+"', 'sheetId="1"', kept)
+                break
+        if kept:
+            return f"{m.group(1)}\n{kept}\n{m.group(3)}"
+        return m.group(0)
+
+    wb_text = re.sub(
+        r"(<sheets[^>]*>)(.*?)(</sheets>)",
+        _replace_sheets,
+        wb_text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    wb_text = re.sub(
+        r"<definedNames[^>]*>.*?</definedNames>", "", wb_text, flags=re.DOTALL
+    )
+    wb_text = re.sub(
+        r"<customWorkbookViews[^>]*>.*?</customWorkbookViews>",
+        "",
+        wb_text,
+        flags=re.DOTALL,
+    )
+    all_entries["xl/workbook.xml"] = wb_text.encode("utf-8")
 
     # Fix workbook.xml.rels — keep only the target sheet + shared resources
+    wb_rels_bytes = all_entries.get("xl/_rels/workbook.xml.rels")
     if wb_rels_bytes is not None:
-        if _HAS_LXML:
-            rels_root = _lxml_etree.fromstring(wb_rels_bytes)
-            to_remove = []
-            for rel in list(rels_root):
-                rel_type = rel.get("Type", "")
-                rid = rel.get("Id", "")
-                if "worksheet" in rel_type and rid != target_rid:
-                    to_remove.append(rel)
-            for el in to_remove:
-                rels_root.remove(el)
-            all_entries["xl/_rels/workbook.xml.rels"] = _lxml_etree.tostring(
-                rels_root, xml_declaration=True, encoding="UTF-8", standalone=True
-            )
-        else:
-            rels_text = wb_rels_bytes.decode("utf-8")
-            if target_rid:
-                # Remove all worksheet relationships except the target
-                def _filter_rels(m: re.Match) -> str:
-                    rel_xml = m.group(0)
-                    rid_m = re.search(r'Id="([^"]+)"', rel_xml)
-                    if rid_m and rid_m.group(1) != target_rid:
-                        if "worksheet" in rel_xml:
-                            return ""
-                    return rel_xml
+        rels_text = wb_rels_bytes.decode("utf-8")
+        if target_rid:
+            # Remove all worksheet relationships except the target
+            def _filter_rels(m: re.Match) -> str:
+                rel_xml = m.group(0)
+                rid_m = re.search(r'Id="([^"]+)"', rel_xml)
+                if rid_m and rid_m.group(1) != target_rid:
+                    if "worksheet" in rel_xml:
+                        return ""
+                return rel_xml
 
-                rels_text = re.sub(r"<Relationship\b[^>]*/>", _filter_rels, rels_text)
-            all_entries["xl/_rels/workbook.xml.rels"] = rels_text.encode("utf-8")
+            rels_text = re.sub(r"<Relationship\b[^>]*/>", _filter_rels, rels_text)
+        all_entries["xl/_rels/workbook.xml.rels"] = rels_text.encode("utf-8")
 
 
 def _cleanup_app_xml(all_entries: dict[str, bytes]) -> None:
@@ -2443,75 +2365,39 @@ def _cleanup_app_xml(all_entries: dict[str, bytes]) -> None:
     if app_bytes is None:
         return
 
-    if _HAS_LXML:
-        try:
-            root = _lxml_etree.fromstring(app_bytes)
-            # Fix HeadingPairs: <vt:i4>4</vt:i4> → <vt:i4>1</vt:i4>
-            for elem in root.iter():
-                if elem.tag == f"{{{NS_R}}}i4" or elem.tag.endswith("}i4"):
-                    if elem.text and elem.text.strip() == "4":
-                        parent = elem.getparent()
-                        if parent is not None:
-                            gparent = parent.getparent()
-                            if gparent is not None:
-                                # Check if this is inside HeadingPairs
-                                gparent_tag = _lxml_etree.QName(gparent.tag).localname
-                                if gparent_tag == "vector":
-                                    elem.text = "1"
-            # Fix TitlesOfParts: keep only the first sheet name
-            for vector in root.iter():
-                if _lxml_etree.QName(vector.tag).localname == "vector":
-                    children = list(vector)
-                    # Check if this is TitlesOfParts (contains lpstr children)
-                    if (
-                        len(children) > 1
-                        and _lxml_etree.QName(children[0].tag).localname == "lpstr"
-                    ):
-                        # This is TitlesOfParts — keep only first entry
-                        for child in children[1:]:
-                            vector.remove(child)
-                        vector.set("size", "1")
-            all_entries["docProps/app.xml"] = _lxml_etree.tostring(
-                root, xml_declaration=True, encoding="UTF-8", standalone=True
+    # Regex fallback
+    app_text = app_bytes.decode("utf-8")
+    # Replace the i4 in HeadingPairs
+    app_text = re.sub(
+        r"(<HeadingPairs>.*?<vt:i4>)\d+(</vt:i4>.*?</HeadingPairs>)",
+        r"\g<1>1\2",
+        app_text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    # Fix TitlesOfParts vector size and remove extra entries
+    app_text = re.sub(
+        r'(<TitlesOfParts>.*?<vt:vector\s+)size="\d+"',
+        r'\g<1>size="1"',
+        app_text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    # Remove all but first <vt:lpstr> in TitlesOfParts
+    tp_match = re.search(
+        r"(<TitlesOfParts>.*?<vt:vector[^>]*>)(.*?)(</vt:vector>)",
+        app_text,
+        re.DOTALL,
+    )
+    if tp_match:
+        inner = tp_match.group(2)
+        first_lpstr = re.search(r"<vt:lpstr>.*?</vt:lpstr>", inner, re.DOTALL)
+        if first_lpstr:
+            new_inner = first_lpstr.group(0)
+            app_text = (
+                app_text[: tp_match.start(2)] + new_inner + app_text[tp_match.end(2) :]
             )
-        except Exception:
-            pass
-    else:
-        # Regex fallback
-        app_text = app_bytes.decode("utf-8")
-        # Replace the i4 in HeadingPairs
-        app_text = re.sub(
-            r"(<HeadingPairs>.*?<vt:i4>)\d+(</vt:i4>.*?</HeadingPairs>)",
-            r"\g<1>1\2",
-            app_text,
-            count=1,
-            flags=re.DOTALL,
-        )
-        # Fix TitlesOfParts vector size and remove extra entries
-        app_text = re.sub(
-            r'(<TitlesOfParts>.*?<vt:vector\s+)size="\d+"',
-            r'\g<1>size="1"',
-            app_text,
-            count=1,
-            flags=re.DOTALL,
-        )
-        # Remove all but first <vt:lpstr> in TitlesOfParts
-        tp_match = re.search(
-            r"(<TitlesOfParts>.*?<vt:vector[^>]*>)(.*?)(</vt:vector>)",
-            app_text,
-            re.DOTALL,
-        )
-        if tp_match:
-            inner = tp_match.group(2)
-            first_lpstr = re.search(r"<vt:lpstr>.*?</vt:lpstr>", inner, re.DOTALL)
-            if first_lpstr:
-                new_inner = first_lpstr.group(0)
-                app_text = (
-                    app_text[: tp_match.start(2)]
-                    + new_inner
-                    + app_text[tp_match.end(2) :]
-                )
-        all_entries["docProps/app.xml"] = app_text.encode("utf-8")
+    all_entries["docProps/app.xml"] = app_text.encode("utf-8")
 
 
 def _cleanup_custom_xml(all_entries: dict[str, bytes]) -> None:
@@ -2918,13 +2804,7 @@ def _filter_sheet_xml(
     keep_from_row: int,
     keep_to_row: int,
 ) -> bytes:
-    """Filter sheet XML — keep only rows in range with reindexed references.
-
-    Uses lxml for proper namespace handling and valid XML output.
-    Falls back to regex when lxml is unavailable.
-    """
-    if _HAS_LXML:
-        return _filter_sheet_xml_lxml(sheet_data, keep_from_row, keep_to_row)
+    """Filter sheet XML — keep only rows in range with reindexed references."""
     return _filter_sheet_xml_regex(sheet_data, keep_from_row, keep_to_row)
 
 
@@ -2966,169 +2846,6 @@ def _reindex_range_ref(ref: str, keep_from_row: int, keep_to_row: int) -> str | 
     new_r1 = max(1, max(r1, keep_from_row) - keep_from_row + 1)
     new_r2 = max(1, min(r2, keep_to_row) - keep_from_row + 1)
     return f"{c1}{new_r1}:{c2}{new_r2}"
-
-
-def _filter_sheet_xml_lxml(
-    sheet_data: bytes,
-    keep_from_row: int,
-    keep_to_row: int,
-) -> bytes:
-    """lxml-based sheet XML filter."""
-    root = _lxml_etree.fromstring(sheet_data)
-    ns = NS_MAIN
-    _cell_ref_re = re.compile(r"^([A-Z]+)(\d+)$")
-
-    # Register namespaces for proper output (skip empty prefix — lxml rejects it)
-    for prefix, uri in _LXML_NS.items():
-        if prefix:
-            _lxml_etree.register_namespace(prefix, uri)
-
-    # 1. Update <dimension>
-    dim = root.find(f"{{{ns}}}dimension")
-    if dim is not None:
-        ref = dim.get("ref", "")
-        try:
-            _, _, max_col, _ = range_boundaries(ref)
-        except (ValueError, IndexError):
-            max_col = 10
-        new_count = keep_to_row - keep_from_row + 1
-        dim.set("ref", f"A1:{get_column_letter(max_col)}{new_count}")
-
-    # 2. Filter <sheetData>/<row> and reindex cell references
-    sheet_data_elem = root.find(f"{{{ns}}}sheetData")
-    if sheet_data_elem is not None:
-        rows_to_remove = []
-        for row_elem in sheet_data_elem.findall(f"{{{ns}}}row"):
-            r_attr = row_elem.get("r")
-            if r_attr is None:
-                rows_to_remove.append(row_elem)
-                continue
-            try:
-                r = int(r_attr)
-            except ValueError:
-                rows_to_remove.append(row_elem)
-                continue
-
-            if r < keep_from_row or r > keep_to_row:
-                rows_to_remove.append(row_elem)
-                continue
-
-            new_r = r - keep_from_row + 1
-            row_elem.set("r", str(new_r))
-
-            # Reindex cell r attributes
-            for c_elem in row_elem.findall(f"{{{ns}}}c"):
-                cell_ref = c_elem.get("r", "")
-                m = _cell_ref_re.match(cell_ref)
-                if m:
-                    c_elem.set(
-                        "r",
-                        _reindex_cell_ref(m.group(1), int(m.group(2)), keep_from_row),
-                    )
-
-        for elem in rows_to_remove:
-            sheet_data_elem.remove(elem)
-
-    # 3. Filter <mergeCells>
-    merge_cells = root.find(f"{{{ns}}}mergeCells")
-    if merge_cells is not None:
-        to_remove = []
-        kept_count = 0
-        for mc in merge_cells.findall(f"{{{ns}}}mergeCell"):
-            ref = mc.get("ref", "")
-            try:
-                min_col, min_r, max_col, max_r = range_boundaries(ref)
-            except (ValueError, IndexError):
-                to_remove.append(mc)
-                continue
-            if max_r < keep_from_row or min_r > keep_to_row:
-                to_remove.append(mc)
-                continue
-            nr1 = max(min_r, keep_from_row) - keep_from_row + 1
-            nr2 = min(max_r, keep_to_row) - keep_from_row + 1
-            mc.set(
-                "ref",
-                f"{get_column_letter(min_col)}{nr1}:{get_column_letter(max_col)}{nr2}",
-            )
-            kept_count += 1
-        for elem in to_remove:
-            merge_cells.remove(elem)
-        merge_cells.set("count", str(kept_count))
-        if kept_count == 0:
-            root.remove(merge_cells)
-
-    # 4. Remove autoFilter
-    for af in root.findall(f"{{{ns}}}autoFilter"):
-        root.remove(af)
-
-    # Remove filterMode from sheetPr
-    sheet_pr = root.find(f"{{{ns}}}sheetPr")
-    if sheet_pr is not None:
-        if "filterMode" in sheet_pr.attrib:
-            del sheet_pr.attrib["filterMode"]
-
-    # Remove extLst (references features that become invalid after reindex)
-    for ext_lst in root.findall(f"{{{ns}}}extLst"):
-        root.remove(ext_lst)
-
-    # Also remove extLst inside sheetPr
-    if sheet_pr is not None:
-        for ext_lst in sheet_pr.findall(f"{{{ns}}}extLst"):
-            sheet_pr.remove(ext_lst)
-
-    # 5. Remove dataValidations
-    for dv in root.findall(f"{{{ns}}}dataValidations"):
-        root.remove(dv)
-
-    # 5b. Filter conditionalFormatting
-    for cf in list(root.findall(f"{{{ns}}}conditionalFormatting")):
-        sqref = cf.get("sqref", "")
-        parts = re.split(r"\s+", sqref)
-        kept_parts = []
-        for part in parts:
-            reindexed = _reindex_range_ref(part, keep_from_row, keep_to_row)
-            if reindexed is not None:
-                kept_parts.append(reindexed)
-        if not kept_parts:
-            root.remove(cf)
-        else:
-            cf.set("sqref", " ".join(kept_parts))
-
-    # 6. Reset sheetView
-    for sv in root.findall(f"{{{ns}}}sheetView"):
-        sv.set("topLeftCell", "A1")
-        if sv.get("view") == "pageBreakPreview":
-            del sv.attrib["view"]
-        # Reset selection
-        for sel in sv.findall(f"{{{ns}}}selection"):
-            sel.set("activeCell", "A1")
-            sel.set("sqref", "A1")
-
-    # 7. Filter rowBreaks
-    for rb in list(root.findall(f"{{{ns}}}rowBreaks")):
-        to_remove = []
-        for brk in rb.findall(f"{{{ns}}}brk"):
-            brk_id = brk.get("id")
-            if brk_id is None:
-                to_remove.append(brk)
-                continue
-            try:
-                br = int(brk_id)
-            except ValueError:
-                to_remove.append(brk)
-                continue
-            if br < keep_from_row or br > keep_to_row:
-                to_remove.append(brk)
-            else:
-                brk.set("id", str(max(1, br - keep_from_row + 1)))
-        for elem in to_remove:
-            rb.remove(elem)
-        if len(rb) == 0:
-            root.remove(rb)
-
-    return _lxml_etree.tostring(
-        root, xml_declaration=True, encoding="UTF-8", standalone=True
-    )
 
 
 def _filter_sheet_xml_regex(
@@ -3349,7 +3066,7 @@ def _filter_sheet_xml_regex(
                 continue
             new_br_r = br_r - keep_from_row + 1
             bx = re.sub(r'id="\d+"', f'id="{new_br_r}"', bx)
-            kept_brs.append(bx)
+        kept_brs.append(bx)
         if not kept_brs:
             return ""
         return bk_open + "".join(kept_brs) + bk_close
@@ -3368,146 +3085,12 @@ def _filter_drawing_xml(
     drawing_data: bytes,
     keep_from_row: int,
     keep_to_row: int,
-) -> bytes:
-    """Filter drawing XML, keeping only anchors in the target range.
-
-    Uses regex-based string operations instead of ET.fromstring/ET.tostring
-    to preserve original namespace declarations (xmlns:ns2, xmlns:ns4
-    etc.) which Python ET may rename during serialization,
-    causing the Excel error "Repaired Records: Drawing shape".
-
-    Supports twoCellAnchor, oneCellAnchor and absoluteAnchor.
-    Adjusts anchor row positions.
-    """
-    result, _ = _filter_drawing_xml_with_rids(
-        drawing_data,
-        keep_from_row,
-        keep_to_row,
-    )
-    return result
-
-
-def _filter_drawing_xml_with_rids(
-    drawing_data: bytes,
-    keep_from_row: int,
-    keep_to_row: int,
 ) -> tuple[bytes, set[str]]:
-    """Filter drawing XML using lxml and return retained image rIds.
-
-    Uses proper XML DOM parsing instead of regex to produce valid OOXML.
-    Handles twoCellAnchor, oneCellAnchor, and absoluteAnchor elements.
-    Collects r:embed rIds from retained <a:blip> elements.
-
-    Returns:
-        Tuple of (filtered_xml_bytes, retained_rids).
-    """
+    """Filter drawing XML and return retained image rIds."""
     retained_rids: set[str] = set()
-
-    if _HAS_LXML:
-        return _filter_drawing_xml_lxml(
-            drawing_data, keep_from_row, keep_to_row, retained_rids
-        )
-
-    # Fallback: regex-based (original code)
     return _filter_drawing_xml_regex(
         drawing_data, keep_from_row, keep_to_row, retained_rids
     )
-
-
-def _filter_drawing_xml_lxml(
-    drawing_data: bytes,
-    keep_from_row: int,
-    keep_to_row: int,
-    retained_rids: set[str],
-) -> tuple[bytes, set[str]]:
-    """lxml-based drawing XML filter — produces valid OOXML output."""
-    root = _lxml_etree.fromstring(drawing_data)
-
-    # Register namespaces so lxml uses proper prefixes when serializing
-    for prefix, uri in _LXML_NS.items():
-        _lxml_etree.register_namespace(prefix, uri)
-
-    ns_xdr = NS_DRAWING
-    ns_a = NS_DRAWINGML
-    ns_r = NS_R
-
-    to_remove = []
-
-    for anchor in root:
-        tag = _lxml_etree.QName(anchor.tag).localname
-
-        if tag in ("twoCellAnchor", "oneCellAnchor"):
-            from_elem = anchor.find(f"{{{ns_xdr}}}from")
-            to_elem = anchor.find(f"{{{ns_xdr}}}to")
-
-            from_row = 0
-            to_row = 0
-
-            if from_elem is not None:
-                row_elem = from_elem.find(f"{{{ns_xdr}}}row")
-                if row_elem is not None and row_elem.text:
-                    from_row = int(row_elem.text)
-
-            if to_elem is not None:
-                row_elem = to_elem.find(f"{{{ns_xdr}}}row")
-                if row_elem is not None and row_elem.text:
-                    to_row = int(row_elem.text)
-
-            # Remove anchors completely outside the range
-            if to_row < keep_from_row or from_row > keep_to_row:
-                to_remove.append(anchor)
-                continue
-
-            # Remove anchors whose CENTER is outside the range
-            # (prevents bleeding from adjacent operations)
-            center_row = (from_row + to_row) / 2.0
-            if center_row < keep_from_row or center_row > keep_to_row:
-                to_remove.append(anchor)
-                continue
-
-            # Clamp from/to to the keep range, then reindex
-            clamped_from = max(from_row, keep_from_row)
-            clamped_to = min(to_row, keep_to_row)
-
-            if from_elem is not None:
-                row_elem = from_elem.find(f"{{{ns_xdr}}}row")
-                if row_elem is not None:
-                    row_elem.text = str(clamped_from - keep_from_row)
-                # Reset rowOff to 0 when clamping from_row
-                if from_row < keep_from_row:
-                    row_off = from_elem.find(f"{{{ns_xdr}}}rowOff")
-                    if row_off is not None:
-                        row_off.text = "0"
-
-            if to_elem is not None:
-                row_elem = to_elem.find(f"{{{ns_xdr}}}row")
-                if row_elem is not None:
-                    row_elem.text = str(clamped_to - keep_from_row)
-
-            # Collect rIds from <a:blip r:embed="..."> elements
-            for blip in anchor.iter(f"{{{ns_a}}}blip"):
-                embed = blip.get(f"{{{ns_r}}}embed")
-                if embed:
-                    retained_rids.add(embed)
-
-        elif tag == "absoluteAnchor":
-            to_remove.append(anchor)
-
-    for elem in to_remove:
-        root.remove(elem)
-
-    # Renumber all cNvPr ids sequentially (WPS generates huge ids like 101820)
-    id_counter = 0
-    for cnvpr in root.iter():
-        if _lxml_etree.QName(cnvpr.tag).localname == "cNvPr":
-            id_counter += 1
-            cnvpr.set("id", str(id_counter))
-
-    result_bytes = _lxml_etree.tostring(
-        root, xml_declaration=True, encoding="UTF-8", standalone=True
-    )
-
-    return result_bytes, retained_rids
 
 
 def _filter_drawing_xml_regex(
@@ -3620,25 +3203,7 @@ def _filter_drawing_rels(
     rels_data: bytes,
     retained_rids: set[str],
 ) -> bytes:
-    """Filter drawing .rels, keeping only retained rIds.
-
-    Removes <Relationship> entries whose Id is not in retained_rids.
-    Uses lxml for valid XML output.
-    """
-    if _HAS_LXML:
-        root = _lxml_etree.fromstring(rels_data)
-        to_remove = []
-        for rel in root:
-            rid = rel.get("Id", "")
-            if rid and rid not in retained_rids:
-                to_remove.append(rel)
-        for elem in to_remove:
-            root.remove(elem)
-        return _lxml_etree.tostring(
-            root, xml_declaration=True, encoding="UTF-8", standalone=True
-        )
-
-    # Regex fallback
+    """Filter drawing .rels, keeping only retained rIds."""
     rels_text = rels_data.decode("utf-8")
 
     def _filter_rel(m: re.Match) -> str:
@@ -3656,23 +3221,11 @@ def _filter_vml_xml(
     keep_from_row: int,
     keep_to_row: int,
 ) -> bytes:
-    """Filter VML XML, removing shapes outside the row range.
-
-    Uses lxml for proper namespace handling.
-    VML shapes use two positioning modes:
-      1. row attribute (direct row binding)
-      2. CSS style="position:absolute;top:..." (approximate)
-    """
-    if _HAS_LXML:
-        try:
-            root = _lxml_etree.fromstring(vml_data)
-        except Exception:
-            return vml_data
-    else:
-        try:
-            root = ET.fromstring(vml_data)
-        except ET.ParseError:
-            return vml_data
+    """Filter VML XML, removing shapes outside the row range."""
+    try:
+        root = ET.fromstring(vml_data)
+    except ET.ParseError:
+        return vml_data
 
     vml_ns = "urn:schemas-microsoft-com:vml"
     office_ns = "urn:schemas-microsoft-com:office:office"
@@ -3711,10 +3264,6 @@ def _filter_vml_xml(
                 parent.remove(elem)
                 break
 
-    if _HAS_LXML:
-        return _lxml_etree.tostring(
-            root, xml_declaration=True, encoding="UTF-8", standalone=True
-        )
     return _serialize_xml(root, NS_MAIN, extra_ns={"v": VML_NS, "o": OFFICE_NS})
 
 
@@ -3723,24 +3272,11 @@ def _filter_comments_xml(
     keep_from_row: int,
     keep_to_row: int,
 ) -> bytes | None:
-    """Filter xl/commentsN.xml — keep and reindex comments in row range.
-
-    Comments whose ref falls within [keep_from_row, keep_to_row] are kept
-    with reindexed row numbers.
-
-    Returns:
-        Filtered XML bytes, or None if no comments in range.
-    """
-    if _HAS_LXML:
-        try:
-            root = _lxml_etree.fromstring(comments_data)
-        except Exception:
-            return comments_data
-    else:
-        try:
-            root = ET.fromstring(comments_data)
-        except ET.ParseError:
-            return comments_data
+    """Filter xl/commentsN.xml — keep and reindex comments in row range."""
+    try:
+        root = ET.fromstring(comments_data)
+    except ET.ParseError:
+        return comments_data
 
     ns = NS_MAIN
     comment_list = root.find(f"{{{ns}}}commentList")
@@ -3766,8 +3302,4 @@ def _filter_comments_xml(
     if len(comment_list) == 0:
         return None
 
-    if _HAS_LXML:
-        return _lxml_etree.tostring(
-            root, xml_declaration=True, encoding="UTF-8", standalone=True
-        )
     return _serialize_xml(root, NS_MAIN)

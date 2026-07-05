@@ -27,7 +27,8 @@ import pytest
 from openpyxl import Workbook
 
 from app.services.bom_parser_service import parse_bom as _real_parse_bom
-from app.services.heuristic_analyzer import HeuristicAnalyzer
+
+from .heuristic_helper import HeuristicAnalyzer
 
 
 def parse_bom(file_path: str, sheets_config: list[dict[str, Any]] | None = None) -> Any:

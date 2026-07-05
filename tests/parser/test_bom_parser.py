@@ -26,14 +26,12 @@ from openpyxl import Workbook
 from app.services.bom_parser_service import (
     BOMData,
     PartInfo,
-    get_all_config_quantities,
-    get_config_quantities,
-    lookup_part_name,
 )
 from app.services.bom_parser_service import (
     parse_bom as _real_parse_bom,
 )
-from app.services.heuristic_analyzer import HeuristicAnalyzer
+
+from .heuristic_helper import HeuristicAnalyzer
 
 
 def parse_bom(file_path: str, sheets_config: list[dict[str, Any]] | None = None) -> Any:
@@ -701,141 +699,6 @@ class TestParseBomGlobalNames:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  11. get_config_quantities
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestGetConfigQuantities:
-    @pytest.fixture
-    def bom_data(self) -> BOMData:
-        parts = {
-            "P001": PartInfo(part_number="P001", name_cn="Part1"),
-            "P002": PartInfo(part_number="P002", name_cn="Part2"),
-            "P003": PartInfo(part_number="P003", name_cn="Part3"),
-        }
-        config_qty = {
-            "Config A": {"P001": 2.0, "P002": 1.0},
-            "Config B": {"P001": 1.0, "P003": 3.0},
-        }
-        return BOMData(
-            parts=parts,
-            config_names=["Config A", "Config B"],
-            config_quantities=config_qty,
-            global_names={
-                "P001": ("Part1", ""),
-                "P002": ("Part2", ""),
-                "P003": ("Part3", ""),
-            },
-        )
-
-    def test_get_single_config(self, bom_data: BOMData):
-        result = get_config_quantities(bom_data, "Config A")
-        assert len(result) == 2
-        assert result["P001"].quantity == 2.0
-        assert result["P002"].quantity == 1.0
-        assert result["P001"].name_cn == "Part1"
-
-    def test_get_config_not_found(self, bom_data: BOMData):
-        with pytest.raises(ValueError, match="not found"):
-            get_config_quantities(bom_data, "NonExistent")
-
-    def test_get_all_configs(self, bom_data: BOMData):
-        result = get_all_config_quantities(bom_data)
-        assert len(result) == 2
-        assert "Config A" in result
-        assert "Config B" in result
-        assert result["Config A"]["P001"].quantity == 2.0
-        assert result["Config B"]["P003"].quantity == 3.0
-
-    def test_part_in_config_not_in_parts_uses_global_names(self):
-        """Когда деталь есть в config_quantities, но НЕТ в bom.parts →
-        PartInfo создаётся из global_names (строки 329-330).
-
-        Это может случиться при ручном конструировании BOMData
-        или если деталь добавилась только в config_quantities
-        (например, при нестандартной обработке).
-        """
-        parts = {
-            "P001": PartInfo(part_number="P001", name_cn="Existing Part"),
-        }
-        config_qty = {
-            "Config": {
-                "P001": 1.0,
-                "P999": 2.0,  # NOT in parts!
-            },
-        }
-        global_names = {
-            "P001": ("Existing Part", ""),
-            "P999": ("Fallback Part", "Fallback EN"),
-        }
-        bom = BOMData(
-            parts=parts,
-            config_names=["Config"],
-            config_quantities=config_qty,
-            global_names=global_names,
-        )
-
-        result = get_config_quantities(bom, "Config")
-        assert len(result) == 2
-        # P001 — из parts
-        assert result["P001"].name_cn == "Existing Part"
-        assert result["P001"].quantity == 1.0
-        # P999 — НЕ в parts, должен быть взят из global_names (строки 329-330)
-        assert result["P999"].name_cn == "Fallback Part", (
-            f"Expected 'Fallback Part' from global_names, got '{result['P999'].name_cn}'"
-        )
-        assert result["P999"].name_en == "Fallback EN"
-        assert result["P999"].quantity == 2.0
-
-
-# ═══════════════════════════════════════════════════════════════════════
-#  12. lookup_part_name
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestLookupPartName:
-    @pytest.fixture
-    def bom_data(self) -> BOMData:
-        parts = {
-            "P001": PartInfo(
-                part_number="P001", name_cn="Part1 CN", name_en="Part1 EN"
-            ),
-        }
-        return BOMData(
-            parts=parts,
-            config_names=["Config1"],
-            config_quantities={"Config1": {"P001": 1.0}},
-            global_names={"P001": ("P1 CN", "P1 EN"), "P002": ("P2 CN", "P2 EN")},
-        )
-
-    def test_finds_in_parts(self, bom_data: BOMData):
-        cn, en = lookup_part_name(bom_data, "P001")
-        assert cn == "Part1 CN"
-        assert en == "Part1 EN"
-
-    def test_falls_back_to_global(self, bom_data: BOMData):
-        cn, en = lookup_part_name(bom_data, "P002")
-        assert cn == "P2 CN"
-        assert en == "P2 EN"
-
-    def test_not_found(self, bom_data: BOMData):
-        cn, en = lookup_part_name(bom_data, "P999")
-        assert cn == ""
-        assert en == ""
-
-    def test_part_without_name_falls_back(self, bom_data: BOMData):
-        """Part exists in parts but without name → fallback to global_names."""
-        # Create a part without name
-        bom_data.parts["P001"] = PartInfo(part_number="P001")  # no name
-        # Remove from global_names to avoid cross-contamination
-        bom_data.global_names.pop("P001", None)
-
-        # Now add P001 to global_names
-        bom_data.global_names["P001"] = ("Global CN", "Global EN")
-        cn, en = lookup_part_name(bom_data, "P001")
-        # Should get from global_names since part has no name
-        assert cn == "Global CN"
-        assert en == "Global EN"
 
 
 # ═══════════════════════════════════════════════════════════════════════

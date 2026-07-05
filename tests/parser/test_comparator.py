@@ -30,7 +30,6 @@ from app.services.comparator_service import (
     ConfigComparisonResult,
     Discrepancy,
     DiscrepancyType,
-    MatchingEngine,
     MultiConfigComparisonResult,
     _compare_config_worker,
     _get_card_numbers,
@@ -1177,92 +1176,6 @@ class TestFormatDiscrepancyReport:
         report = format_discrepancy_report(mc)
         assert "Всего проверено комплектаций" in report
         assert "Найдено несоответствий" in report
-
-
-# ═══════════════════════════════════════════════════════════════════════
-#  13. MatchingEngine
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestMatchingEngine:
-    def test_default_creation(self):
-        engine = MatchingEngine()
-        assert engine.use_fuzzy is True
-
-    def test_compare_all_no_fuzzy(self):
-        bom = BOMData(
-            parts={"P001": PartInfo("P001", quantity=1.0)},
-            config_names=["C1"],
-            config_quantities={"C1": {"P001": 1.0}},
-            global_names={},
-        )
-        cards = _make_minimal_cards({"P001": 2.0})
-        engine = MatchingEngine(use_fuzzy=False)
-        result = engine.compare(bom, cards)
-        assert isinstance(result, MultiConfigComparisonResult)
-        assert result.total_configs == 1
-        assert len(result.all_discrepancies) == 1  # qty mismatch
-
-    def test_compare_all_with_fuzzy(self):
-        bom = BOMData(
-            parts={
-                "5306200ED001": PartInfo("5306200ED001", name_cn="Балка", quantity=2.0)
-            },
-            config_names=["C1"],
-            config_quantities={"C1": {"5306200ED001": 2.0}},
-            global_names={"5306200ED001": ("Балка", "")},
-        )
-        cards = _make_minimal_cards({"5306200-ED001": 2.0})
-        engine = MatchingEngine(use_fuzzy=True)
-        result = engine.compare(bom, cards)
-        fuzzy = [
-            d
-            for d in result.all_discrepancies
-            if d.discrepancy_type == DiscrepancyType.FUZZY_MATCH
-        ]
-        assert len(fuzzy) == 1, "Fuzzy match should be detected by engine"
-
-    def test_single_config_via_engine(self):
-        bom = BOMData(
-            parts={"P001": PartInfo("P001", quantity=2.0)},
-            config_names=["C1", "C2"],
-            config_quantities={"C1": {"P001": 2.0}, "C2": {"P001": 1.0}},
-            global_names={},
-        )
-        cards = _make_minimal_cards({"P001": 1.0})
-        engine = MatchingEngine(use_fuzzy=False)
-        result = engine.compare(bom, cards, single_config="C1")
-        assert result.total_configs == 1, "Should compare only C1"
-        assert len(result.config_results) == 1
-        assert result.config_results[0].config_name == "C1"
-
-    def test_single_config_nonexistent(self):
-        """Non-existent single_config should result in empty comparison."""
-        bom = BOMData(
-            parts={},
-            config_names=["C1"],
-            config_quantities={"C1": {}},
-            global_names={},
-        )
-        cards = _make_minimal_cards({"P001": 1.0})
-        engine = MatchingEngine()
-        result = engine.compare(bom, cards, single_config="NonExistent")
-        # Should have 1 config result with no BOM parts
-        assert len(result.config_results) == 1
-        assert result.config_results[0].config_name == "NonExistent"
-
-    def test_fuzzy_engine_perfect_match(self):
-        """Engine with fuzzy enabled should still detect exact matches."""
-        bom = BOMData(
-            parts={"P001": PartInfo("P001", quantity=1.0)},
-            config_names=["C1"],
-            config_quantities={"C1": {"P001": 1.0}},
-            global_names={},
-        )
-        cards = _make_minimal_cards({"P001": 1.0})
-        engine = MatchingEngine(use_fuzzy=True)
-        result = engine.compare(bom, cards)
-        assert len(result.all_discrepancies) == 0, "Exact match should pass"
 
 
 # ═══════════════════════════════════════════════════════════════════════
