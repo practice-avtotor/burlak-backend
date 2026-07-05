@@ -567,6 +567,7 @@ class CardParserService:
 
         # Resolve format-specific config for this file
         tb, columns = self._resolve_format_config(format_group)
+
         result = self._parse_operational_card(data, filename, tb, columns)
 
         # If parsing produced no parts (mapping didn't fit), try auto-detection
@@ -622,7 +623,7 @@ class CardParserService:
                 # Check for known header patterns
                 found: dict[str, int] = {}
                 for col_idx, text in row_vals.items():
-                    if any(kw in text for kw in ("零件号", "part_no", "part number", "物料号", "料号", "编号", "part no")):
+                    if any(kw in text for kw in ("零件件号", "零件号", "part_no", "part number", "物料号", "料号", "编号", "part no")):
                         found["part_no"] = col_idx
                     elif any(kw in text for kw in ("数量", "qty", "quantity", "用量", "需求量")):
                         found["qty"] = col_idx
@@ -914,12 +915,12 @@ class CardParserService:
                     continue
 
                 # Quantity
-                qty = 1.0
+                qty = 0.0
                 if qty_col > 0:
                     raw_qty = self._cell_value(ws, row_idx, qty_col)
-                    qty = normalize_quantity(raw_qty, default=1.0)
-                    if qty <= 0:
-                        qty = 1.0
+                    qty = normalize_quantity(raw_qty, default=0.0)
+                    if qty < 0:
+                        qty = 0.0
 
                 # Name
                 name = ""
@@ -1077,12 +1078,12 @@ class CardParserService:
                     continue
 
                 # Quantity
-                qty = 1.0
+                qty = 0.0
                 if qty_col > 0:
                     raw_qty = self._cell_value(ws, r, qty_col)
-                    qty = normalize_quantity(raw_qty, default=1.0)
-                    if qty <= 0:
-                        qty = 1.0
+                    qty = normalize_quantity(raw_qty, default=0.0)
+                    if qty < 0:
+                        qty = 0.0
 
                 # Name
                 name = ""
@@ -1192,3 +1193,4 @@ class CardParserService:
             return ws.cell(row=row, column=col).value
         except (AttributeError, IndexError, KeyError):
             return None
+
