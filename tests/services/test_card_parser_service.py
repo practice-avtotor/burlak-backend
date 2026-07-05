@@ -284,7 +284,7 @@ class TestParseCard:
         assert result.sheets_parsed == 2
 
     def test_default_qty_when_no_qty_column(self):
-        """When qty column index is 0, all parts get qty=1.0."""
+        """When qty column index is 0, all parts get qty=0.0."""
         cfg = _default_mapping_config()
         cfg["cards"]["columns"]["qty"] = 0
         parser = CardParserService(cfg)
@@ -299,7 +299,7 @@ class TestParseCard:
         )
         result = parser.parse_card(data, "001-card.xlsx")
         assert len(result.parts) == 1
-        assert result.parts[0].quantity == 1.0
+        assert result.parts[0].quantity == 0.0
 
     def test_missing_part_no_column_returns_error(self):
         """If mapping config has no part_no column, returns error result."""
