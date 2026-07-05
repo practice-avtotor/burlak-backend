@@ -84,10 +84,50 @@ async def analyze_structure(payload: dict[str, Any]) -> dict[str, Any]:
                                 },
                             }
                         ],
+                    },
+                    "changan_format": {
+                        "structure_type": "bom_overview_with_op_sheets",
+                        "description": "Changan UNI-S: первый лист - сводный BOM (零件明细表), остальные - карты операций с 图示编号.",
+                        "card_number_source": "filename",
+                        "card_number_pattern": r"[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Z]{2}-[A-Z]{2}",
+                        "card_number_confidence": 0.85,
+                        "sheets": [
+                            {
+                                "sheet_name": None,
+                                "sheet_type": "card_data",
+                                "header_rows": [2],
+                                "data_start_row": 3,
+                                "columns": {
+                                    "part_no": {
+                                        "col_index": 7,
+                                        "header": "零件件号",
+                                        "confidence": 0.95,
+                                    },
+                                    "name_cn": {
+                                        "col_index": 10,
+                                        "header": "零件名称",
+                                        "confidence": 0.95,
+                                    },
+                                    "qty": {
+                                        "col_index": 13,
+                                        "header": "数量",
+                                        "confidence": 0.95,
+                                    },
+                                },
+                                "table_boundaries": {
+                                    "end_markers": ["签字", "审核", "批准"],
+                                },
+                            }
+                        ],
                     }
                 },
                 "file_classification_rules": {
                     "operational_card_patterns": [
+                        {
+                            "type": "filename_regex",
+                            "pattern": r"^S203-[A-Za-z0-9]+-[A-Za-z]{2}-[A-Za-z]{2}",
+                            "format_group": "changan_format",
+                        },
                         {
                             "type": "filename_regex",
                             "pattern": r"^[A-Za-z0-9]+-[A-Za-z0-9]*-AS-\d+",

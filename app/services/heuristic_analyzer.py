@@ -566,6 +566,10 @@ def looks_like_quantity(value: Any) -> float:
         return 0.9
     except ValueError:
         pass
+    # String like "1个", "2pcs", "3 шт" — starts with a number
+    import re
+    if re.match(r'^\d+[\s]*\S', s):
+        return 0.85
     # 'S' or '-' — possible VIN-breakdown values
     if s.upper() == "S" or s == "-":
         return 0.2  # Not a quantity, but "same as"
@@ -794,7 +798,7 @@ class HeuristicAnalyzer:
         return score / max_possible
 
     @staticmethod
-    def detect_column_types(ws: Any, header_rows: list[int]) -> dict[str, int]:
+    def detect_column_types(ws: Any, header_rows: list[int], *, allow_qty_fallback: bool = False) -> dict[str, int]:
         """Detect column types from headers and cell content.
 
         Analyzes headers and verifies data types in cells.
@@ -1023,6 +1027,15 @@ class HeuristicAnalyzer:
             )
             if name_col:
                 col_types["name_cn"] = name_col
+
+        # Phase 4b: Content-based fallback for qty (only in card parser context)
+        if "qty" not in col_types and allow_qty_fallback:
+            known = {v for v in col_types.values() if v > 0}
+            qty_col = HeuristicAnalyzer._find_qty_by_content(
+                ws, data_start, sample_end, max_col, header_texts, known,
+            )
+            if qty_col:
+                col_types["qty"] = qty_col
 
         # Phase 5: If name_en found but content is Russian/CJK → reassign to name_cn
         # (but only if the header does NOT contain explicit English markers)
@@ -1414,6 +1427,123 @@ class HeuristicAnalyzer:
             if col_scores[best] > 0.2:
                 logger.info(
                     "Name column found by content: %d (score=%.2f)",
+                    best,
+                    col_scores[best],
+                )
+                return best
+        return 0
+
+    @staticmethod
+    def _find_qty_by_content(
+        ws: Any, start_row: int, end_row: int, max_col: int,
+        header_texts: dict[str, str] | None = None,
+        known_cols: set[int] | None = None,
+    ) -> int:
+        """Fallback: find the qty column by cell content.
+
+        Analyzes all unassigned columns and finds the one where most values
+        look like quantities (numbers, fractions).
+
+        Used when keyword-based detection fails to find qty column
+        (typical for Changan format).
+
+        Args:
+            ws: Worksheet.
+            start_row: Start row of data.
+            end_row: End row of data.
+            max_col: Maximum column.
+            header_texts: Column header texts (to exclude meta columns).
+            known_cols: Already assigned columns (part_no, name, etc.).
+
+        Returns:
+            Column number or 0.
+        """
+        if known_cols is None:
+            known_cols = set()
+
+        col_scores: dict[int, float] = {}
+
+        for c in range(1, max_col + 1):
+            if c in known_cols:
+                continue
+
+            # Exclude columns with meta headers
+            if header_texts:
+                text = header_texts.get(c, "")
+                if text:
+                    is_meta = False
+                    for kw in STRICT_META_KEYWORDS:
+                        if kw.lower() in text:
+                            is_meta = True
+                            break
+                    if not is_meta:
+                        for kw in META_KEYWORDS:
+                            if kw.lower() in text:
+                                is_meta = True
+                                break
+                    if is_meta:
+                        continue
+
+            # Collect non-empty values
+            values: list = []
+            for r in range(start_row, end_row):
+                v = HeuristicAnalyzer.get_cell_value(ws, r, c)
+                if v is not None:
+                    values.append(v)
+
+            if len(values) < 3:
+                continue
+
+            # Exclude boolean-like columns (both 0 and 1) — these are config columns.
+            # Do NOT exclude columns with only 1 (common qty = 1 per part).
+            numeric_vals: list[float] = []
+            for v in values:
+                if isinstance(v, (int, float)):
+                    numeric_vals.append(float(v))
+                elif isinstance(v, str) and v.strip():
+                    try:
+                        numeric_vals.append(float(v.strip().replace(",", ".")))
+                    except (ValueError, TypeError):
+                        pass
+            if numeric_vals:
+                unique_nums = set(numeric_vals)
+                # Only skip if BOTH 0 and 1 are present (boolean config)
+                if unique_nums == {0.0, 1.0}:
+                    continue
+
+            # Count qty hits and exclude part_no/name columns
+            qty_hits = 0
+            pn_hits = 0
+            nm_hits = 0
+            for v in values:
+                qt = looks_like_quantity(v)
+                if qt > 0.8:
+                    qty_hits += 1
+                if looks_like_part_number(v) > 0.6:
+                    pn_hits += 1
+                if looks_like_name(v) > 0.5:
+                    nm_hits += 1
+
+            total = len(values)
+            qty_ratio = qty_hits / total
+            pn_ratio = pn_hits / total
+            nm_ratio = nm_hits / total
+
+            # Qty column: >30% numeric values, but NOT part_no and NOT name
+            if qty_ratio > 0.3 and pn_ratio < 0.3 and nm_ratio < 0.3:
+                # Bonus for fractional values (distinguishes from sequence numbers)
+                has_fraction = any(
+                    isinstance(v, float) and v != int(v)
+                    for v in values if isinstance(v, (int, float))
+                )
+                fraction_bonus = 0.1 if has_fraction else 0.0
+                col_scores[c] = qty_ratio + fraction_bonus
+
+        if col_scores:
+            best = max(col_scores, key=col_scores.get)
+            if col_scores[best] > 0.3:
+                logger.info(
+                    "Qty column found by content: %d (score=%.2f)",
                     best,
                     col_scores[best],
                 )
