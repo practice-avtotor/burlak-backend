@@ -319,14 +319,15 @@ class TestParseCard:
         assert result.error is not None
         assert "part_no" in result.error
 
-    def test_corrupted_xlsx_raises(self):
-        """Non-XLSX bytes raise an exception for operational card filenames."""
+    def test_corrupted_xlsx_returns_error_result(self):
+        """Non-XLSX bytes return an error result instead of raising."""
         cfg = _default_mapping_config()
         parser = CardParserService(cfg)
 
         # Use an operational card filename so it proceeds to parse
-        with pytest.raises(Exception):
-            parser.parse_card(b"not an xlsx file", "001-card.xlsx")
+        result = parser.parse_card(b"not an xlsx file", "001-card.xlsx")
+        assert result.error is not None
+        assert "Cannot open workbook" in result.error
 
     def test_name_from_name_column(self):
         """Name values are read from the name column."""
@@ -399,7 +400,7 @@ class TestParseCard:
         assert len(result.parts) == 1
 
     def test_validation_column_index_out_of_bounds(self):
-        """If column index is out of bounds, returns validation error."""
+        """If column index is out of bounds, falls back to auto-detection."""
         cfg = _default_mapping_config()
         cfg["cards"]["columns"]["part_no"] = 100  # out of bounds
         parser = CardParserService(cfg)
@@ -413,8 +414,9 @@ class TestParseCard:
             }
         )
         result = parser.parse_card(data, "001-card.xlsx")
-        assert result.error is not None
-        assert "exceeds sheet max column" in result.error
+        # Auto-detect finds headers and parses successfully
+        assert len(result.parts) > 0
+        assert result.parts[0].part_number == "P001"
 
     def test_validation_zero_parts_extracted_from_non_empty_sheet(self):
         """If 0 parts are parsed from a non-empty sheet, returns validation error."""

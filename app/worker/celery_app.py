@@ -24,6 +24,8 @@ celery_app = Celery(
         "app.worker.tasks.process_card",
         "app.worker.tasks.aggregate",
         "app.worker.tasks.package",
+        "app.worker.tasks.process_heuristic",
+        "app.worker.tasks.cleanup",
     ],
 )
 
@@ -36,8 +38,11 @@ celery_app.conf.update(
     task_always_eager=False,
     task_eager=False,
     # --- Timeouts ---
-    task_soft_time_limit=300,
-    task_time_limit=360,
+    # Support very slow machines: up to 3 hours per task.
+    # soft limit sends SoftTimeLimitExceeded (allows graceful cleanup)
+    # hard limit force-kills the worker process.
+    task_soft_time_limit=10500,   # 2 h 55 min
+    task_time_limit=10800,        # 3 hours
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     # --- Retry ---
@@ -49,13 +54,13 @@ celery_app.conf.update(
     worker_cancel_long_running_tasks_on_connection_loss=True,
     # --- Broker ---
     broker_transport_options={
-        "visibility_timeout": 3600,
+        "visibility_timeout": 10800,
         "fanout_prefix": True,
         "fanout_patterns": True,
     },
     broker_connection_retry_on_startup=True,
     # --- Result Backend ---
-    result_expires=3600,
+    result_expires=10800,
     result_backend_transport_options={
         "retry_policy": {
             "timeout": 5.0,
@@ -70,8 +75,19 @@ celery_app.conf.update(
         "app.worker.tasks.process_card.process_card": {"queue": "cards"},
         "app.worker.tasks.aggregate.aggregate": {"queue": "aggregate"},
         "app.worker.tasks.package.package": {"queue": "aggregate"},
+        "app.worker.tasks.process_heuristic.process_heuristic": {"queue": "heuristic"},
+        "app.worker.tasks.cleanup.cleanup_old_jobs": {"queue": "cleanup"},
     },
     task_create_missing_queues=True,
+
+    # --- Beat schedule (periodic tasks) ---
+    beat_schedule={
+        "cleanup-old-jobs": {
+            "task": "app.worker.tasks.cleanup.cleanup_old_jobs",
+            "schedule": 3600,  # Every hour (3600 seconds)
+            "kwargs": {"max_age_hours": 24},
+        },
+    },
 )
 
 

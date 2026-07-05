@@ -8,7 +8,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core.config import get_settings
@@ -30,6 +30,7 @@ def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -219,9 +220,43 @@ def update_mapping_config(job_id: int, mapping_config: dict[str, Any]) -> None:
     _update_job(job_id, mapping_config=json.dumps(mapping_config))
 
 
-def update_job_status(job_id: int, status: str, stage: str | None = None) -> None:
-    """Updates the status and stage of a job synchronously (WAL-safe)."""
-    _update_job(job_id, status=status, stage=stage)
+def update_job_status(
+    job_id: int, status: str, stage: str | None = None, error: str | None = None,
+    total: int | None = None, processed: int | None = None, failed: int | None = None,
+) -> None:
+    """Updates the status, stage, error, and optionally progress of a job synchronously (WAL-safe).
+
+    Combines status + progress in a single atomic write to avoid race conditions
+    where the frontend reads stale progress data between separate writes.
+    """
+    fields: dict[str, Any] = {"status": status, "stage": stage}
+    if error is not None:
+        fields["error"] = error
+    if total is not None:
+        fields["total"] = total
+    if processed is not None:
+        fields["processed"] = processed
+    if failed is not None:
+        fields["failed"] = failed
+    _update_job(job_id, **fields)
+    # Publish progress to Redis for SSE subscribers
+    if total is not None or processed is not None:
+        try:
+            _publish_progress(
+                job_id,
+                processed if processed is not None else 0,
+                failed if failed is not None else 0,
+                total if total is not None else 0,
+            )
+        except Exception:
+            pass
+
+
+def update_job_progress(
+    job_id: int, total: int, processed: int, failed: int
+) -> None:
+    """Update the progress counters of a job synchronously (WAL-safe)."""
+    _update_job(job_id, total=total, processed=processed, failed=failed)
 
 
 def get_mapping_config(job_id: int) -> dict[str, Any]:
@@ -255,6 +290,39 @@ def get_job_files(job_id: int) -> tuple[str | None, str | None]:
         conn.close()
 
 
+def get_selected_configs(job_id: int) -> list[str]:
+    """Retrieves the selected_configs for a job.
+
+    Returns list of selected config names, or empty list for 'all'.
+    Handles both old format (single string) and new format (JSON array).
+    """
+    conn = _get_conn()
+    try:
+        cursor = conn.execute(
+            "SELECT selected_config FROM jobs WHERE id = ?", (job_id,)
+        )
+        row = cursor.fetchone()
+        if not row or not row["selected_config"]:
+            return []
+        val = row["selected_config"]
+        # New format: JSON array
+        if val.startswith("["):
+            return json.loads(val)
+        # Old format: single string
+        return [val]
+    finally:
+        conn.close()
+
+
+def get_selected_config(job_id: int) -> str | None:
+    """Retrieves the selected_config for a job (backward compat).
+
+    Returns the first selected config or None.
+    """
+    configs = get_selected_configs(job_id)
+    return configs[0] if configs else None
+
+
 def create_cards(job_id: int, card_paths: list[str]) -> None:
     """Creates card records and sets the total card count on the job synchronously (WAL-safe)."""
     create_cards_bulk(job_id, card_paths)
@@ -279,8 +347,8 @@ def set_job_status(job_id: int, status: str) -> None:
 
 
 def set_job_error(job_id: int, error_message: str) -> None:
-    """Set job status to 'error'. Preserves current stage for debugging."""
-    _update_job(job_id, status="error")
+    """Set job status to 'error' with error message. Preserves current stage for debugging."""
+    _update_job(job_id, status="error", error=error_message)
 
 
 def get_failed_cards(job_id: int) -> list[dict[str, str]]:
@@ -296,5 +364,62 @@ def get_failed_cards(job_id: int) -> list[dict[str, str]]:
             {"card_path": r["card_path"], "error_message": r["error_message"] or ""}
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+def set_celery_task_id(job_id: int, task_id: str) -> None:
+    """Store the Celery task ID for a job (WAL-safe)."""
+    _update_job(job_id, celery_task_id=task_id)
+
+
+def get_celery_task_id(job_id: int) -> str | None:
+    """Retrieve the Celery task ID for a job."""
+    conn = _get_conn()
+    try:
+        cursor = conn.execute(
+            "SELECT celery_task_id FROM jobs WHERE id = ?", (job_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return row["celery_task_id"]
+    finally:
+        conn.close()
+
+
+def get_old_job_ids(max_age_hours: int = 24) -> list[int]:
+    """Return IDs of jobs older than *max_age_hours* in terminal states.
+
+    Only jobs with status 'done' or 'error' are eligible for cleanup —
+    jobs still in 'processing' or 'awaiting_upload' are skipped to avoid
+    deleting active work.
+    """
+    cutoff_iso = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
+    conn = _get_conn()
+    try:
+        cursor = conn.execute(
+            "SELECT id FROM jobs WHERE created_at < ? AND status IN ('done', 'error') ORDER BY id",
+            (cutoff_iso,),
+        )
+        return [row["id"] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def delete_job(job_id: int) -> None:
+    """Delete a job and its cards from the database (WAL-safe).
+
+    Storage files are cleaned up separately via ``storage.cleanup_job()``.
+    """
+    conn = _get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM cards WHERE job_id = ?", (job_id,))
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

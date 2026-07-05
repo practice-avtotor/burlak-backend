@@ -7,7 +7,10 @@ def test_chunk_upload_idempotency(
     """Тест idempotency чанковой загрузки (повторная отправка того же чанка)."""
     # Создаём задачу
     response = api_client.post("/api/v1/jobs")
-    job_id = response.json()["id"]
+    data = response.json()
+    job_id = data["id"]
+    session_token = data["session_token"]
+    _h = {"X-Session-Token": session_token}
 
     chunk_data = b"test chunk data " * 100
 
@@ -15,7 +18,7 @@ def test_chunk_upload_idempotency(
     resp1 = api_client.put(
         f"/api/v1/jobs/{job_id}/files/bom/chunks/0",
         content=chunk_data,
-        headers={"X-Total-Chunks": "2"},
+        headers={"X-Total-Chunks": "2", **_h},
     )
     assert resp1.status_code == 200
 
@@ -23,7 +26,7 @@ def test_chunk_upload_idempotency(
     resp2 = api_client.put(
         f"/api/v1/jobs/{job_id}/files/bom/chunks/0",
         content=chunk_data,
-        headers={"X-Total-Chunks": "2"},
+        headers={"X-Total-Chunks": "2", **_h},
     )
     assert resp2.status_code == 200
 
@@ -31,7 +34,7 @@ def test_chunk_upload_idempotency(
     resp3 = api_client.put(
         f"/api/v1/jobs/{job_id}/files/bom/chunks/0",
         content=chunk_data + b"extra",
-        headers={"X-Total-Chunks": "2"},
+        headers={"X-Total-Chunks": "2", **_h},
     )
     assert resp3.status_code == 422
     assert resp3.json()["error"]["code"] == "CHUNK_CORRUPTED"

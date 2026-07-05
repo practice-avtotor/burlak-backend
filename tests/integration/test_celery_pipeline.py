@@ -63,11 +63,12 @@ def test_celery_pipeline_success(temp_db_path: str, mock_storage_path: Path) -> 
     conn = sqlite3.connect(temp_db_path)
     conn.execute(
         """
-        INSERT INTO jobs (id, status, stage, bom_path, archive_path, processed, failed, total, bom_uploaded, archive_uploaded, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs (id, session_token, status, stage, bom_path, archive_path, processed, failed, total, bom_uploaded, archive_uploaded, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
+            "test-celery-pipeline-token",
             "processing",
             "unpacking",
             str(bom_path),

@@ -11,7 +11,8 @@ from app.services.result_service import ResultService
 async def test_pipeline_happy_path(temp_db_path: str, mock_storage_path: Path):
     """Сквозной тест: создание задачи → отметка файлов → done → проверка результатов."""
     async with aiosqlite.connect(temp_db_path) as db:
-        job_id = await async_repository.create_job(db)
+        created = await async_repository.create_job(db)
+        job_id = created["id"]
 
         # Имитируем успешную загрузку файлов
         await async_repository.update_file_upload(

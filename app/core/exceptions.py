@@ -38,3 +38,8 @@ class ResultsNotReadyError(BurlakError):
 class StorageError(BurlakError):
     code = "STORAGE_ERROR"
     status_code = 500
+
+
+class JobForbiddenError(BurlakError):
+    code = "JOB_FORBIDDEN"
+    status_code = 403

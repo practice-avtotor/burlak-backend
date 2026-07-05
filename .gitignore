@@ -1,17 +1,23 @@
 # Python-generated files
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.egg
+MANIFEST
 
 # Virtual environments
 venv/
-.venv
+.venv/
+ENV/
 
-# Testing and logs
+# Testing and coverage
 .pytest_cache/
+.coverage
+htmlcov/
 *.log
 
 # Output directories
@@ -19,6 +25,8 @@ output_*/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 
 # SQLite databases and transaction logs
 *.db
@@ -28,6 +36,17 @@ data/
 
 # IDE files
 .idea/
+.vscode/
+*.swp
+*.swo
 
-# macos files
+# OS files
 .DS_Store
+Thumbs.db
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Jupyter
+.ipynb_checkpoints

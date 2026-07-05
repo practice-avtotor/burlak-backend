@@ -1,6 +1,7 @@
 import aiosqlite
 from fastapi import APIRouter, Depends, Header, Request
 
+from app.api.v1.deps import verify_job_session
 from app.db.database import get_async_db
 from app.schemas.file import ChunkUploadResponse, FileCompleteResponse
 from app.services.file_service import FileService
@@ -16,6 +17,7 @@ async def upload_chunk(
     request: Request,
     x_total_chunks: int = Header(..., alias="X-Total-Chunks"),
     db: aiosqlite.Connection = Depends(get_async_db),
+    _session_ok: None = Depends(verify_job_session),
 ) -> ChunkUploadResponse:
     """Upload a single file chunk.
 
@@ -45,6 +47,7 @@ async def complete_file_upload(
     job_id: int,
     role: str,
     db: aiosqlite.Connection = Depends(get_async_db),
+    _session_ok: None = Depends(verify_job_session),
 ) -> FileCompleteResponse:
     """Finalize chunk upload and assemble the file.
 

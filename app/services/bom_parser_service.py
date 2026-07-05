@@ -64,15 +64,11 @@ _NON_CONFIG_SHEET_KEYWORDS = (
 )
 
 # Keywords identifying multi-sheet BOM style (总装BOM/涂装BOM/焊装BOM)
-# These sheets lack separate config columns but have a qty column;
-# all sheets of this type are aggregated into a single configuration.
+# Only exact matches (not substrings) should trigger aggregation.
 _MULTI_SHEET_BOM_KEYWORDS = (
     "总装bom",
     "涂装bom",
     "焊装bom",
-    "总装",
-    "涂装",
-    "焊装",
 )
 
 logger = logging.getLogger(__name__)
@@ -214,6 +210,73 @@ def _merge_global_names(
                 existing = all_global_names.get(pn_normalized, ("", ""))
                 if not existing[1]:
                     all_global_names[pn_normalized] = (existing[0], ne_text)
+
+
+def auto_detect_bom_sheets(file_path: str) -> list[dict[str, Any]]:
+    """Auto-detect BOM sheet structure by scanning for common column headers.
+
+    Used as fallback when the ML mapping config doesn't match the actual BOM file.
+    Scans each sheet for headers like 零件号 (part_no), 数量/用量 (qty), 零件名称 (name_cn).
+    """
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    except Exception:
+        return []
+
+    detected_sheets: list[dict[str, Any]] = []
+    try:
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            if (ws.max_row or 0) < 2:
+                continue
+
+            # Scan first 5 rows for headers
+            found_cols: dict[str, int] = {}
+            header_row = 1
+            for row_idx in range(1, min(6, (ws.max_row or 0) + 1)):
+                for col_idx in range(1, min(50, (ws.max_column or 0) + 1)):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    if cell.value is None:
+                        continue
+                    text = str(cell.value).strip().lower()
+                    if any(kw in text for kw in ("零件号", "part_no", "part number", "物料号", "料号")):
+                        found_cols["part_no"] = col_idx
+                    elif any(kw in text for kw in ("数量", "qty", "quantity", "用量", "需求量", "单车用量")):
+                        found_cols["qty"] = col_idx
+                    elif any(kw in text for kw in ("零件名称", "物料名称", "名称")) and "name_cn" not in found_cols:
+                        found_cols["name_cn"] = col_idx
+                    elif "name_en" not in found_cols and any(kw in text for kw in ("英文", "english", "name_en")):
+                        found_cols["name_en"] = col_idx
+
+                if len(found_cols) >= 2:
+                    header_row = row_idx
+                    break
+
+            if "part_no" in found_cols and "qty" in found_cols:
+                columns: dict[str, Any] = {}
+                for key, col_idx in found_cols.items():
+                    columns[key] = {
+                        "col_index": col_idx,
+                        "header": key,
+                        "confidence": 0.5,
+                    }
+                detected_sheets.append({
+                    "sheet_name": sheet_name,
+                    "sheet_type": "bom_data",
+                    "header_rows": [header_row],
+                    "data_start_row": header_row + 1,
+                    "total_data_rows_estimate": (ws.max_row or header_row + 1) - header_row,
+                    "columns": columns,
+                    "layout": {"type": "single_table", "description": "auto-detected"},
+                })
+                logger.info(
+                    "Auto-detected BOM sheet: %s, cols: %s (header row %d)",
+                    sheet_name, list(found_cols.keys()), header_row,
+                )
+    finally:
+        wb.close()
+
+    return detected_sheets
 
 
 def parse_bom(file_path: str, sheets_config: list[dict[str, Any]]) -> BOMData:

@@ -1,24 +1,36 @@
 import json
+import secrets
 from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
 
 
-async def create_job(db: aiosqlite.Connection) -> int:
-    """Creates a new job in the database and returns its ID."""
+async def create_job(
+    db: aiosqlite.Connection, mode: str = "heuristic"
+) -> dict[str, Any]:
+    """Creates a new job in the database and returns its data including session_token.
+
+    Args:
+        db: Database connection.
+        mode: Processing mode — "heuristic" or "ml".
+
+    Returns:
+        Dict with 'id' and 'session_token' for the new job.
+    """
     now = datetime.now(UTC).isoformat()
+    session_token = secrets.token_urlsafe(32)
     async with db.execute(
         """
-        INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
-        VALUES ('awaiting_upload', 0, 0, 0, 0, 0, ?, ?)
+        INSERT INTO jobs (session_token, mode, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
+        VALUES (?, ?, 'awaiting_upload', 0, 0, 0, 0, 0, ?, ?)
         """,
-        (now, now),
+        (session_token, mode, now, now),
     ) as cursor:
         await db.commit()
         if cursor.lastrowid is None:
             raise ValueError("Failed to create job: lastrowid is None")
-        return cursor.lastrowid
+        return {"id": cursor.lastrowid, "session_token": session_token}
 
 
 async def get_job(db: aiosqlite.Connection, job_id: int) -> dict[str, Any] | None:
@@ -54,18 +66,34 @@ async def try_start_processing(db: aiosqlite.Connection, job_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-async def update_job_status(
-    db: aiosqlite.Connection, job_id: int, status: str, stage: str | None = None
-) -> None:
-    """Updates the status and stage of a job."""
+async def reset_job_for_retry(db: aiosqlite.Connection, job_id: int) -> None:
+    """Reset a job from 'error' or 'done' status back to 'processing' for retry."""
     now = datetime.now(UTC).isoformat()
     await db.execute(
         """
         UPDATE jobs
-        SET status = ?, stage = ?, updated_at = ?
+        SET status = 'processing', stage = 'unpacking', error = NULL,
+            processed = 0, failed = 0, updated_at = ?
+        WHERE id = ? AND status IN ('error', 'done')
+        """,
+        (now, job_id),
+    )
+    await db.commit()
+
+
+async def update_job_status(
+    db: aiosqlite.Connection, job_id: int, status: str, stage: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Updates the status, stage, and error of a job."""
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        """
+        UPDATE jobs
+        SET status = ?, stage = ?, error = ?, updated_at = ?
         WHERE id = ?
         """,
-        (status, stage, now, job_id),
+        (status, stage, error, now, job_id),
     )
     await db.commit()
 

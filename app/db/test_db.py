@@ -60,7 +60,8 @@ def test_db() -> Generator[str, None, None]:
 async def test_async_flow(test_db: str) -> None:
     async with aiosqlite.connect(test_db) as db:
         # Create Job
-        job_id = await async_repository.create_job(db)
+        created = await async_repository.create_job(db)
+        job_id = created["id"]
         assert job_id > 0
 
         # Verify job state
@@ -145,10 +146,10 @@ def test_sync_concurrency(test_db: str) -> None:
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("processing", 10, 0, 0, 1, 1, "2026-06-22", "2026-06-22"),
+        ("test-token-sync-concurrency", "processing", 10, 0, 0, 1, 1, "2026-06-22", "2026-06-22"),
     )
     job_id = cursor.lastrowid
     assert job_id is not None
@@ -240,10 +241,10 @@ def test_sync_repository_not_found_errors(test_db: str) -> None:
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("processing", 1, 0, 0, 1, 1, "2026-06-22", "2026-06-22"),
+        ("test-token-not-found", "processing", 1, 0, 0, 1, 1, "2026-06-22", "2026-06-22"),
     )
     job_id = cursor.lastrowid
     conn.commit()

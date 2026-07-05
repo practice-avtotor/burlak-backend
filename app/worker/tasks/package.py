@@ -42,15 +42,28 @@ def package(self: Task, job_id: int) -> None:
         # 2. Clean up temporary translated_cards directory
         _cleanup_translated_dir(translated_cards_dir)
 
-        # 3. Count failed cards
+        # 3. Count failed cards and check if ZIP has content
         failed_count = _count_failed_cards(job_id)
+        zip_has_content = os.path.exists(output_zip_path) and os.path.getsize(output_zip_path) > 0
 
         # 4. Set final job status
-        if failed_count == 0:
+        if not zip_has_content:
+            error_msg = (
+                "No translated cards generated. "
+                "Check mapping_config and card parsing logs."
+            )
+            sync_repository.update_job_status(
+                job_id, "error", stage="completed", error=error_msg
+            )
+            logger.warning("Job %d: %s", job_id, error_msg)
+        elif failed_count == 0:
             sync_repository.update_job_status(job_id, "done", "completed")
             logger.info("Job %d completed successfully (done)", job_id)
         else:
-            sync_repository.update_job_status(job_id, "error", "completed_with_errors")
+            error_msg = f"Completed with {failed_count} failed cards"
+            sync_repository.update_job_status(
+                job_id, "error", stage="completed_with_errors", error=error_msg
+            )
             logger.warning(
                 "Job %d completed with %d failed cards (error)",
                 job_id,
@@ -60,12 +73,18 @@ def package(self: Task, job_id: int) -> None:
     except Exception as exc:
         logger.error("Packaging failed for job %d: %s", job_id, exc, exc_info=True)
         if self.request.retries >= self.max_retries:
-            sync_repository.update_job_status(job_id, "error", "packaging_failed")
+            sync_repository.update_job_status(
+                job_id, "error", stage="packaging_failed", error=str(exc)
+            )
         raise self.retry(exc=exc)
 
 
 def _create_zip(translated_cards_dir: str, output_zip_path: str) -> None:
-    """Create ``translated_cards.zip`` from all XLSX files in *translated_cards_dir*."""
+    """Create ``translated_cards.zip`` from all XLSX files in *translated_cards_dir*.
+
+    Also includes split_cards/ directory if present (preserves original
+    split files with images for user inspection).
+    """
     if not os.path.isdir(translated_cards_dir):
         logger.warning(
             "translated_cards directory not found at %s — creating empty archive",
@@ -80,6 +99,7 @@ def _create_zip(translated_cards_dir: str, output_zip_path: str) -> None:
     os.makedirs(os.path.dirname(output_zip_path), exist_ok=True)
     file_count = 0
     with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Include translated cards
         for root, _dirs, files in os.walk(translated_cards_dir):
             for fname in sorted(files):
                 # Skip temporary Excel files
@@ -95,6 +115,24 @@ def _create_zip(translated_cards_dir: str, output_zip_path: str) -> None:
                     file_count += 1
                 except (FileNotFoundError, PermissionError) as exc:
                     logger.warning("Skipping unreadable file %s: %s", fname, exc)
+
+        # Include split_cards directory (original split files with images)
+        job_dir = os.path.dirname(translated_cards_dir)
+        split_cards_dir = os.path.join(job_dir, "split_cards")
+        if os.path.isdir(split_cards_dir):
+            for root, _dirs, files in os.walk(split_cards_dir):
+                for fname in sorted(files):
+                    if fname.startswith("~$"):
+                        continue
+                    if not fname.lower().endswith((".xlsx", ".xls")):
+                        continue
+                    full_path = os.path.join(root, fname)
+                    rel_path = os.path.join("split_cards", os.path.relpath(full_path, split_cards_dir))
+                    try:
+                        zf.write(full_path, rel_path)
+                        file_count += 1
+                    except (FileNotFoundError, PermissionError) as exc:
+                        logger.warning("Skipping unreadable split file %s: %s", fname, exc)
 
     size_kb = (
         os.path.getsize(output_zip_path) / 1024

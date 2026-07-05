@@ -2,19 +2,15 @@
 
 Uses ``httpx.Client`` (blocking) because Celery workers run in a synchronous
 context. Calling async ``httpx.AsyncClient`` from a Celery task would require
-``asyncio.run()`` per task — an anti-pattern that creates a new event loop
-for each of the 1000 cards.
+``asyncio.run()`` per task — an anti-pattern.
 
-Includes a simple circuit breaker: after N consecutive failures the adapter
-fails fast for a cooldown period, preventing cascading timeouts when the ML
-service is unreachable.
+Includes a simple circuit breaker and a ``ManualResponseNeeded`` exception
+for handling the ml-mock manual mode (503 responses).
 
 Typical usage inside a Celery task::
 
-    from app.core.config import get_settings
     from app.services.structure_adapter import StructureAdapter
 
-    settings = get_settings()
     with StructureAdapter(settings.ml_service_url) as adapter:
         mapping = adapter.analyze_structure(snapshot_json)
         translations = adapter.translate_batch(unique_strings)
@@ -31,28 +27,15 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Default timeout for ML service calls (seconds).
-# Structure analysis may be slow on first cold-start.
 _DEFAULT_TIMEOUT = 120.0
-
-# Maximum number of texts per translation batch.
 _TRANSLATE_BATCH_SIZE = 200
 
-# Circuit breaker settings
 _CB_FAILURE_THRESHOLD = 5
 _CB_COOLDOWN_SECONDS = 60.0
 
 
 class _CircuitBreaker:
-    """Simple circuit breaker for ML service calls.
-
-    After ``failure_threshold`` consecutive failures the circuit opens and
-    all calls fail fast for ``cooldown_seconds``.  After the cooldown the
-    circuit half-opens, allowing a single probe request; on success it
-    closes again.
-
-    Thread-safe via ``threading.Lock``.
-    """
+    """Simple thread-safe circuit breaker for ML service calls."""
 
     def __init__(
         self,
@@ -67,13 +50,11 @@ class _CircuitBreaker:
 
     @property
     def is_open(self) -> bool:
-        """Return True if the circuit is open (failing fast)."""
         if self._consecutive_failures < self._failure_threshold:
             return False
         elapsed = time.monotonic() - self._opened_at
         if elapsed >= self._cooldown_seconds:
-            # Half-open: allow a probe
-            return False
+            return False  # half-open: allow a probe
         return True
 
     def record_success(self) -> None:
@@ -93,7 +74,6 @@ class _CircuitBreaker:
                 )
 
     def check(self) -> None:
-        """Raise if the circuit is open."""
         if self.is_open:
             raise httpx.ConnectError(
                 f"Circuit breaker open: ML service unreachable "
@@ -102,15 +82,17 @@ class _CircuitBreaker:
             )
 
 
+class ManualResponseNeededError(Exception):
+    """Raised when ML service is in manual mode and no response file is prepared."""
+
+    def __init__(self, message: str, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or {}
+
+
 class StructureAdapter:
-    """Synchronous HTTP client for the ML structure & translation service.
+    """Synchronous HTTP client for the ML structure & translation service."""
 
-    Args:
-        base_url: Base URL of the ML service (e.g. ``http://ml-service:8000``).
-        timeout: Request timeout in seconds.
-    """
-
-    # Module-level circuit breaker shared across all instances
     _circuit_breaker = _CircuitBreaker()
 
     def __init__(self, base_url: str, timeout: float = _DEFAULT_TIMEOUT) -> None:
@@ -119,7 +101,6 @@ class StructureAdapter:
         self._client = httpx.Client(timeout=timeout)
 
     def close(self) -> None:
-        """Close the underlying HTTP client."""
         if hasattr(self._client, "close"):
             self._client.close()
 
@@ -134,21 +115,7 @@ class StructureAdapter:
     # ------------------------------------------------------------------
 
     def analyze_structure(self, snapshot: dict[str, Any]) -> dict[str, Any]:
-        """Send an XLSX snapshot to the ML service and receive a mapping config.
-
-        Args:
-            snapshot: JSON-serialisable snapshot produced by
-                :func:`~app.services.snapshot_service.extract_snapshot_from_bytes`.
-
-        Returns:
-            A ``mapping_config`` dict describing column coordinates,
-            data start rows, file classification rules, etc.
-
-        Raises:
-            httpx.HTTPStatusError: If the ML service returns a non-2xx status.
-            httpx.ConnectError: If the ML service is unreachable or circuit is open.
-            ValueError: If the ML service returns an error response.
-        """
+        """Send an XLSX snapshot to the ML service and receive a mapping config."""
         self._circuit_breaker.check()
 
         url = f"{self._base_url}/api/v1/analyze-structure"
@@ -157,14 +124,26 @@ class StructureAdapter:
         try:
             response = self._client.post(url, json=snapshot)
             response.raise_for_status()
-        except Exception:
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 503:
+                # Manual mode: no response prepared — not retryable
+                try:
+                    raw = exc.response.json()
+                except Exception:
+                    raw = {}
+                # FastAPI wraps in {"detail": {...}} — unwrap
+                detail = raw.get("detail", raw) if isinstance(raw, dict) else {}
+                raise ManualResponseNeededError(
+                    detail.get("message", "ML manual response not prepared yet."),
+                    detail=detail,
+                ) from exc
             self._circuit_breaker.record_failure()
             raise
 
         self._circuit_breaker.record_success()
         result: dict[str, Any] = response.json()
 
-        # Check if the ML service returned an error
         if result.get("status") == "error":
             error_info = result.get("error", {})
             raise ValueError(
@@ -172,7 +151,6 @@ class StructureAdapter:
                 f"{error_info.get('message', '')}"
             )
 
-        # Extract mapping_config from the ML service response
         mapping_config: dict[str, Any] | None = result.get("mapping_config")
         if mapping_config is None:
             raise ValueError("ML service response is missing 'mapping_config' field")
@@ -185,23 +163,7 @@ class StructureAdapter:
         source_lang: str = "zh",
         target_lang: str = "en",
     ) -> dict[str, str]:
-        """Batch-translate unique strings via the ML translation service.
-
-        Large lists are automatically chunked to avoid exceeding the ML
-        service's request size limits.
-
-        Args:
-            texts: Deduplicated list of source-language strings.
-            source_lang: ISO 639-1 source language code.
-            target_lang: ISO 639-1 target language code.
-
-        Returns:
-            A mapping ``{source_text: translated_text}`` for every input string.
-
-        Raises:
-            httpx.HTTPStatusError: If the ML service returns a non-2xx status.
-            httpx.ConnectError: If the ML service is unreachable or circuit is open.
-        """
+        """Batch-translate unique strings via the ML translation service."""
         if not texts:
             return {}
 
@@ -233,11 +195,9 @@ class StructureAdapter:
                 data: dict[str, Any] = response.json()
                 batch_translations: list[str] = data.get("translations", [])
 
-                # Pair source texts with translations
                 for src, translated in zip(chunk, batch_translations):
                     translations[src] = translated
 
-            # All chunks succeeded — record one success for the entire batch
             self._circuit_breaker.record_success()
         except Exception:
             self._circuit_breaker.record_failure()

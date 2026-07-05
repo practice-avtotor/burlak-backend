@@ -39,31 +39,34 @@ def test_full_job_lifecycle(
     # 1. Создание задачи
     resp = api_client.post("/api/v1/jobs")
     assert resp.status_code == 201, f"Ожидался 201, получен {resp.status_code}"
-    job_id = resp.json()["id"]
+    data = resp.json()
+    job_id = data["id"]
+    session_token = data["session_token"]
+    _h = {"X-Session-Token": session_token}
 
     # 2. Загрузка BOM
     api_client.put(
         f"/api/v1/jobs/{job_id}/files/bom/chunks/0",
         content=b"bom content",
-        headers={"X-Total-Chunks": "1"},
+        headers={"X-Total-Chunks": "1", **_h},
     )
-    resp = api_client.post(f"/api/v1/jobs/{job_id}/files/bom/complete")
+    resp = api_client.post(f"/api/v1/jobs/{job_id}/files/bom/complete", headers=_h)
     assert resp.status_code == 200
 
     # 3. Загрузка Archive
     api_client.put(
         f"/api/v1/jobs/{job_id}/files/archive/chunks/0",
         content=b"archive content",
-        headers={"X-Total-Chunks": "1"},
+        headers={"X-Total-Chunks": "1", **_h},
     )
-    resp = api_client.post(f"/api/v1/jobs/{job_id}/files/archive/complete")
+    resp = api_client.post(f"/api/v1/jobs/{job_id}/files/archive/complete", headers=_h)
     assert resp.status_code == 200
 
     # 4. Запуск обработки
     with patch(
         "app.services.job_processing_service.JobProcessingService.dispatch_processing"
     ):
-        resp = api_client.post(f"/api/v1/jobs/{job_id}/start")
+        resp = api_client.post(f"/api/v1/jobs/{job_id}/start", headers=_h)
         assert resp.status_code == 202
 
     print(f"✅ Тест пройден успешно! job_id = {job_id}")

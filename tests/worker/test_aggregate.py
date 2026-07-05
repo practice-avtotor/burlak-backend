@@ -187,10 +187,10 @@ def temp_db_with_job(temp_db_path: str) -> int:
     conn = sqlite3.connect(temp_db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
-        """INSERT INTO jobs (status, stage, total, processed, failed,
+        """INSERT INTO jobs (session_token, status, stage, total, processed, failed,
                             bom_path, archive_path, bom_uploaded, archive_uploaded,
                             created_at, updated_at)
-           VALUES ('processing', 'processing_cards', 2, 2, 0,
+           VALUES ('test-token-agg-job', 'processing', 'processing_cards', 2, 2, 0,
                    '/tmp/bom.xlsx', '/tmp/archive.zip', 1, 1,
                    '2024-01-01T00:00:00', '2024-01-01T00:00:00')"""
     )
@@ -217,10 +217,10 @@ def temp_db_with_failed_cards(temp_db_path: str) -> int:
     conn = sqlite3.connect(temp_db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
-        """INSERT INTO jobs (status, stage, total, processed, failed,
+        """INSERT INTO jobs (session_token, status, stage, total, processed, failed,
                             bom_path, archive_path, bom_uploaded, archive_uploaded,
                             created_at, updated_at)
-           VALUES ('processing', 'processing_cards', 3, 2, 1,
+           VALUES ('test-token-agg-failed', 'processing', 'processing_cards', 3, 2, 1,
                    '/tmp/bom.xlsx', '/tmp/archive.zip', 1, 1,
                    '2024-01-01T00:00:00', '2024-01-01T00:00:00')"""
     )
@@ -319,8 +319,8 @@ class TestPackage:
         conn = sqlite3.connect(temp_db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
-            """INSERT INTO jobs (status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
-               VALUES ('processing', 2, 1, 1, 1, 1, '2024-01-01T00:00:00', '2024-01-01T00:00:00')"""
+            """INSERT INTO jobs (session_token, status, total, processed, failed, bom_uploaded, archive_uploaded, created_at, updated_at)
+               VALUES ('test-token-count-failed', 'processing', 2, 1, 1, 1, 1, '2024-01-01T00:00:00', '2024-01-01T00:00:00')"""
         )
         conn.commit()
         job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]

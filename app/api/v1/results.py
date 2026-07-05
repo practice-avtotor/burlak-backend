@@ -2,6 +2,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 
+from app.api.v1.deps import verify_job_session
 from app.db.database import get_async_db
 from app.services.result_service import ResultService
 
@@ -12,6 +13,7 @@ router = APIRouter(tags=["results"])
 async def download_diff(
     job_id: int,
     db: aiosqlite.Connection = Depends(get_async_db),
+    _session_ok: None = Depends(verify_job_session),
 ) -> FileResponse:
     """Download diff.xlsx — the comparison report.
 
@@ -32,6 +34,7 @@ async def download_diff(
 async def download_cards(
     job_id: int,
     db: aiosqlite.Connection = Depends(get_async_db),
+    _session_ok: None = Depends(verify_job_session),
 ) -> FileResponse:
     """Download translated_cards.zip — all translated operation cards.
 
