@@ -1,17 +1,17 @@
 # ML-сервис анализа структуры: контракт и архитектура
 
-> **Статус:** Черновик для обсуждения
-> **Цель:** Определить, как ML-сервис будет получать данные об Excel-файлах и сообщать о структуре для нового парсера в Celery Worker
+> **Статус:** Реализовано. Документ отражает фактический контракт между бэкендом и ML-сервисом.
+> **Цель:** Определить, как ML-сервис получает данные об Excel-файлах и сообщает о структуре для парсера в Celery Worker.
 
 ---
 
 ## 1. Контекст и предпосылки
 
-1.  Новый парсер в Celery Worker будет целиком полагаться на `mapping_config` от ML-сервиса.
+1.  Парсер в Celery Worker (ML-режим) полагается на `mapping_config` от ML-сервиса.
 2. **BOM-файлы и операционные карты могут быть в разных форматах.** ML-сервис должен уметь определять структуру для каждого формата.
-3. **Бэкенд перед отправкой в ML конвертирует Excel в данные через openpyxl.** Как это сделано в старом парсере: `openpyxl.load_workbook(file_path, data_only=True)` → чтение ячеек → формирование JSON-слепка.
+3. **Бэкенд перед отправкой в ML конвертирует Excel в JSON-снапшот через `snapshot_service.extract_snapshot_from_bytes()`.** Используется `openpyxl` (read_only) в памяти через `io.BytesIO`.
 4. **ML-сервис не имеет доступа к Shared Storage.** Все данные передаются через HTTP (JSON).
-5. **Бэкенд отправляет несколько BOM-файлов и несколько операционных карт разных форматов.** Бэкенд группирует файлы по формату (например, по шаблону имени файла) и отправляет representative-слепок каждого уникального формата, чтобы ML-сервис точно знал все варианты структуры.
+5. **Бэкенд отправляет несколько BOM-файлов и несколько операционных карт разных форматов.** Бэкенд группирует файлы по формату (по шаблону имени файла) и отправляет representative-слепок каждого уникального формата.
 
 ---
 
@@ -19,30 +19,35 @@
 
 ### 2.1. Принцип
 
-Бэкенд открывает Excel-файл через `openpyxl` (как в старом парсере) и извлекает:
+Бэкенд открывает Excel-файл через `openpyxl` (read_only) и извлекает:
 - Имена всех листов
-- Для каждого листа — первые 300 строк (сырые значения ячеек)
+- Для каждого листа — первые 300 строк (сырые значения ячеек), макс 200 колонок
 - Мета-информацию: количество строк, количество колонок
 
-**Важно (группировка по форматам):** Бэкенд ищет **все** BOM-файлы (шаблон `BOM*.xlsx`) и **все** операционные карты в архиве, группирует их по формату (например, по шаблону/маске имени файла) и отправляет **representative-слепки каждого уникального формата** в ML-сервис. Это позволяет ML-сервису точно знать все варианты структуры, которые встречаются в задаче. Размер слепка — **300 строк** с каждого листа.
+**Группировка по форматам:** Бэкенд группирует файлы по формату (по шаблону/маске имени файла) и отправляет **representative-слепки каждого уникального формата** в ML-сервис. Размер слепка — **300 строк** с каждого листа, макс **200 колонок**.
 
-### 2.2. Пример реализации (новый `excel_service.py`)
+### 2.2. Фактическая реализация (`snapshot_service.py`)
 
 ```python
-import openpyxl
-
-def extract_snapshot(file_path: str, max_rows: int = 300) -> dict:
+# app/services/snapshot_service.py
+def extract_snapshot_from_bytes(
+    data: bytes,
+    filename: str,
+    max_rows: int = 300,
+    max_cols: int = 200,
+) -> dict:
     """
-    Извлечь JSON-слепок Excel-файла для отправки в ML-сервис.
+    Извлечь JSON-слепок Excel-файла из байтового потока для отправки в ML-сервис.
     
     Args:
-        file_path: Путь к .xlsx файлу.
-        max_rows: Сколько строк брать с каждого листа.
+        data: Байты XLSX-файла.
+        filename: Имя файла (для мета-информации).
+        max_rows: Сколько строк брать с каждого листа (по умолч. 300).
+        max_cols: Максимальное количество колонок (по умолч. 200).
     
     Returns:
         dict: {
-            "file_name": "BOM.xlsx",
-            "total_sheets": 3,
+            "filename": "BOM.xlsx",
             "sheets": [
                 {
                     "sheet_name": "总装BOM",
@@ -53,26 +58,23 @@ def extract_snapshot(file_path: str, max_rows: int = 300) -> dict:
             ]
         }
     """
-    wb = openpyxl.load_workbook(file_path, data_only=True)
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     result = {
-        "file_name": os.path.basename(file_path),
-        "total_sheets": len(wb.sheetnames),
+        "filename": filename,
         "sheets": []
     }
     
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        max_row = ws.max_row or 0
-        # Ограничиваем считывание колонок до 50, чтобы избежать проблем с производительностью
-        max_col = min(ws.max_column or 0, 50)
+        # Ограничиваем считывание колонок до 200
+        max_col = min(ws.max_column or 0, max_cols)
         
         rows = []
-        for row_idx in range(1, min(max_rows, max_row) + 1):
+        for row_idx, row in enumerate(ws.iter_rows(
+            min_row=1, max_row=max_rows, max_col=max_col, values_only=True
+        ), start=1):
             row_values = []
-            for col_idx in range(1, max_col + 1):
-                cell = ws.cell(row=row_idx, column=col_idx)
-                value = cell.value
-                # Конвертируем в строку для JSON-совместимости
+            for value in row:
                 if value is None:
                     row_values.append(None)
                 elif isinstance(value, (int, float)):
@@ -83,7 +85,7 @@ def extract_snapshot(file_path: str, max_rows: int = 300) -> dict:
         
         result["sheets"].append({
             "sheet_name": sheet_name,
-            "total_rows": max_row,
+            "total_rows": ws.max_row or 0,
             "total_cols": max_col,
             "rows": rows
         })
@@ -92,15 +94,23 @@ def extract_snapshot(file_path: str, max_rows: int = 300) -> dict:
     return result
 ```
 
+**Ключевые отличия от черновика:**
+- Функция называется `extract_snapshot_from_bytes`, принимает `bytes`, а не `file_path`
+- Поле называется `filename` (без подчёркивания), а не `file_name`
+- Нет поля `total_sheets` (определяется по длине массива `sheets`)
+- Используется `read_only=True` для производительности
+- Максимум колонок: 200 (не 50)
+- Используется `ws.iter_rows()` вместо `ws.cell()` для производительности
+
 ### 2.3. Что попадает в JSON-слепок
 
 | Данные | Откуда | Пример |
 |--------|--------|--------|
-| Имя файла | `os.path.basename(file_path)` | `"BOM.xlsx"` |
+| Имя файла | Параметр `filename` | `"BOM.xlsx"` |
 | Имя листа | `ws.title` | `"总装BOM"` |
 | Всего строк | `ws.max_row` | `1500` |
-| Всего колонок | `ws.max_column` | `30` |
-| Значения ячеек | `ws.cell(row, col).value` | `"零件号"`, `"S1110001"`, `2` |
+| Всего колонок | `min(ws.max_column, 200)` | `30` |
+| Значения ячеек | `ws.iter_rows(values_only=True)` | `"零件号"`, `"S1110001"`, `2` |
 
 **Важно:** Значения передаются как есть (int, float, str, None). ML-сервис сам решает, что с ними делать.
 
@@ -117,15 +127,14 @@ Content-Type: application/json
 
 ### 3.2. Запрос (Request)
 
-**Важно:** `bom` и `sample_cards` — это массивы. Бэкенд группирует все BOM-файлы и все операционные карты по форматам и отправляет representative-слепок каждого уникального формата. Размер слепка — 300 строк с каждого листа.
+**Важно:** `bom` и `sample_cards` — это массивы. Бэкенд группирует все BOM-файлы и все операционные карты по форматам и отправляет representative-слепок каждого уникального формата. Размер слепка — 300 строк с каждого листа, макс 200 колонок.
 
 ```json
 {
   "bom": [
     {
-      "file_name": "BOM.xlsx",
+      "filename": "BOM.xlsx",
       "format_group": "BOM_standard",
-      "total_sheets": 3,
       "sheets": [
         {
           "sheet_name": "总装BOM",
@@ -160,9 +169,8 @@ Content-Type: application/json
       ]
     },
     {
-      "file_name": "BOM_export.xlsx",
+      "filename": "BOM_export.xlsx",
       "format_group": "BOM_export",
-      "total_sheets": 2,
       "sheets": [
         {
           "sheet_name": "Sheet1",
@@ -179,9 +187,8 @@ Content-Type: application/json
   ],
   "sample_cards": [
     {
-      "file_name": "SQRT1L-17-AS-04001.xlsx",
+      "filename": "SQRT1L-17-AS-04001.xlsx",
       "format_group": "card_format_A",
-      "total_sheets": 1,
       "sheets": [
         {
           "sheet_name": "Sheet1",
@@ -196,9 +203,8 @@ Content-Type: application/json
       ]
     },
     {
-      "file_name": "G01-A-AS-05001.xlsx",
+      "filename": "G01-A-AS-05001.xlsx",
       "format_group": "card_format_B",
-      "total_sheets": 2,
       "sheets": [
         {
           "sheet_name": "操作1",
@@ -472,140 +478,76 @@ ML-сервис возвращает `mapping_config` — полное опис�
 
 ## 4. Как mapping_config используется парсером
 
-### 4.1. Analyze Mapping Task (отправляет в ML, сохраняет результат)
+### 4.1. Analyze Mapping Task (фактическая реализация)
+
+Фактическая реализация в [`analyze_mapping.py`](../app/worker/tasks/analyze_mapping.py:18):
 
 ```python
-def analyze_mapping(job_id):
-    # 1. Ищем все BOM-файлы, группируем по формату, делаем JSON-слепки (300 строк)
-    bom_paths = get_all_bom_paths(job_id)  # все BOM*.xlsx
-    bom_groups = group_by_format(bom_paths)  # группировка по шаблону имени
-    bom_snapshots = []
-    for group_name, paths in bom_groups.items():
-        snapshot = extract_snapshot(paths[0], max_rows=300)  # representative
-        snapshot["format_group"] = group_name
-        bom_snapshots.append(snapshot)
+def analyze_mapping(self, job_id):
+    # 1. Получаем пути к BOM и архиву
+    bom_path, archive_path = sync_repository.get_job_files(job_id)
     
-    # 2. Ищем все операционные карты в архиве, группируем по формату, делаем JSON-слепки
-    # Считываем данные в BytesIO, исключая ненужную запись на диск
-    all_card_paths = get_all_card_paths(job_id)
-    card_groups = group_by_format(all_card_paths)
-    card_snapshots = []
-    for group_name, paths in card_groups.items():
-        card_data = read_card_from_zip(job_id, paths[0])
-        snapshot = SnapshotService.extract_snapshot_from_bytes(
-            card_data, os.path.basename(paths[0]), max_rows=300
-        )
-        snapshot["format_group"] = group_name
-        card_snapshots.append(snapshot)
+    # 2. Читаем BOM и извлекаем снапшот
+    with open(bom_path, "rb") as f:
+        bom_data = f.read()
+    bom_snapshot = extract_snapshot_from_bytes(bom_data, os.path.basename(bom_path))
+    bom_snapshot["format_group"] = "BOM"
     
-    # 3. Отправляем в ML-сервис
+    # 3. Группируем карты в архиве по форматам
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        all_paths = [p for p in zf.namelist() if p.endswith(".xlsx")]
+        card_groups = group_by_format(all_paths)
+        
+        card_snapshots = []
+        for group_name, paths in card_groups.items():
+            card_data = zf.read(paths[0])
+            snapshot = extract_snapshot_from_bytes(
+                card_data, os.path.basename(paths[0])
+            )
+            snapshot["format_group"] = group_name
+            card_snapshots.append(snapshot)
+    
+    # 4. Отправляем в ML-сервис через StructureAdapter
     try:
-        response = ml_client.post(
-            "/api/v1/analyze-structure",
-            json={
-                "bom": bom_snapshots,
+        with StructureAdapter(settings.ml_service_url) as ml_client:
+            mapping_config = ml_client.analyze_structure({
+                "bom": [bom_snapshot],
                 "sample_cards": card_snapshots,
                 "options": {
                     "max_sample_rows": 300,
-                    "total_cards_in_archive": len(all_card_paths)
+                    "total_cards_in_archive": len(all_paths)
                 }
-            }
-        )
-        mapping_config = response["mapping_config"]
-    except Exception as e:
-        logger.error(f"ML service failed: {e}")
-        mark_job_error(job_id, f"ML_SERVICE_ERROR: {e}")
+            })
+    except ManualResponseNeededError:
+        mark_job_error(job_id, "ML_SERVICE_UNAVAILABLE")
         return
     
-    # 4. Сохраняем в БД (синхронно, используя sync_repository)
-    sync_repository.update_mapping_config(job_id, mapping_config)
+    # 5. Сохраняем в БД
+    sync_repository.update_job_status(job_id, "processing", "mapping_config", mapping_config)
     
-    # 5. Запускаем обработку карт
+    # 6. Запускаем обработку карт
     sync_repository.update_job_status(job_id, "processing", "processing_cards")
-    for card_path in all_card_paths:
+    for card_path in all_paths:
         process_card.delay(job_id, card_path)
 ```
 
-### 4.2. Process Card Task (использует mapping_config для парсинга)
+### 4.2. Process Card Task (фактическая реализация)
+
+Фактическая реализация делегирует обработку [`CardProcessingService`](../app/services/card_processing_service.py:64):
 
 ```python
-def process_card(job_id, card_path):
-    # 1. Получаем mapping_config (синхронно через sync_repository)
-    mapping = sync_repository.get_mapping_config(job_id)
-    card_mapping = mapping["cards"]
-    
-    # 2. Классифицируем файл по правилам из mapping_config
-    classification, format_group = classify_file(card_path, card_mapping["file_classification_rules"])
-    
-    if classification == "service":
-        # Служебный файл — пропускаем
-        sync_repository.increment_progress(job_id, card_path, success=True)
-        return
-    
-    if classification == "unknown":
-        # Неизвестный формат — помечаем как failed
-        sync_repository.increment_progress(
-            job_id, card_path, success=False, 
-            error_message="Unknown file format, cannot parse"
-        )
-        return
-    
+def process_card(self, job_id, card_path):
     try:
-        # 3. Открываем карту из ZIP (streaming) в BytesIO
-        card_data = read_card_from_zip(job_id, card_path)
-        wb = openpyxl.load_workbook(io.BytesIO(card_data), data_only=True)
+        # Весь пайплайн в CardProcessingService
+        service = CardProcessingService(job_id, card_path)
+        service.process_card(card_path)
         
-        # Находим настройки парсинга для сопоставленной группы формата
-        format_config = card_mapping["formats"][format_group]
-        
-        # 4. Для каждого листа — ищем таблицу деталей по mapping_config
-        parts = []
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            
-            # Определяем, есть ли на этом листе таблица деталей
-            sheet_mapping = find_sheet_mapping(sheet_name, format_config["sheets"])
-            if not sheet_mapping:
-                continue
-            
-            # Берём координаты из mapping_config
-            part_no_col = sheet_mapping["columns"]["part_no"]["col_index"]
-            name_col = sheet_mapping["columns"]["name_cn"]["col_index"]
-            qty_col = sheet_mapping["columns"]["qty"]["col_index"]
-            data_start = sheet_mapping["data_start_row"]
-            
-            # Определяем границы таблицы
-            end_row = find_table_end(
-                ws, data_start, 
-                boundaries_config=sheet_mapping["table_boundaries"]
-            )
-            
-            # Извлекаем данные
-            for row in range(data_start, end_row + 1):
-                part_no = ws.cell(row=row, column=part_no_col).value
-                if part_no is None:
-                    continue
-                qty = ws.cell(row=row, column=qty_col).value
-                name = ws.cell(row=row, column=name_col).value
-                parts.append({
-                    "part_no": str(part_no).strip(),
-                    "name": str(name).strip() if name else "",
-                    "qty": normalize_quantity(qty)
-                })
-        
-        # 5. Извлекаем номер карты
-        card_number = extract_card_number(card_path, format_config)
-        
-        # 6. Сохраняем результаты
-        save_card_results(job_id, card_path, card_number, parts)
-        
-        # 7. Инкрементируем прогресс (success=True)
+        # Инкрементируем прогресс (success)
         progress = sync_repository.increment_progress(job_id, card_path, success=True)
         if progress.is_complete:
             aggregate.delay(job_id)
             
     except Exception as e:
-        # Ловим любые ошибки парсинга, чтобы не ломать очередь, и помечаем карту как failed
         logger.error(f"Failed to process card {card_path}: {e}")
         progress = sync_repository.increment_progress(
             job_id, card_path, success=False, error_message=str(e)
@@ -614,211 +556,21 @@ def process_card(job_id, card_path):
             aggregate.delay(job_id)
 ```
 
+**CardProcessingService.process_card()** выполняет:
+1. Чтение карты из ZIP через `zf.read(card_path)`
+2. Конвертация `.xls` → `.xlsx` при необходимости (через `xls_converter`)
+3. Парсинг через `CardParserService` с использованием `mapping_config`
+4. Извлечение уникальных строк для перевода
+5. `StructureAdapter.translate_batch(texts)` — синхронный batch-перевод
+6. Сохранение оригинальных XLSX-байт в `translated_cards/{safe_name}/`
+7. Сохранение материалов в `card_materials/{safe_name}.json`
+8. Обработка multi-card листов (один XLSX → несколько карт)
+
 ---
 
 ## 5. Полная спецификация mapping_config
 
-### 5.1. Структура верхнего уровня
-
-```typescript
-interface MappingConfig {
-  /** Информация о структуре BOM */
-  bom: BomStructure;
-  
-  /** Информация о структуре операционных карт */
-  cards: CardsStructure;
-  
-  /** Маппинг полей BOM → карты */
-  mapping: {
-    bom_to_card: Record<string, FieldMapping>;
-  };
-  
-  /** Метаданные */
-  metadata: {
-    analyzer_version: string;
-    processing_time_ms: number;
-    model: string;
-    warnings: string[];
-  };
-}
-```
-
-### 5.2. BOM Structure
-
-```typescript
-interface BomStructure {
-  sheets: BomSheetMapping[];
-}
-
-interface BomSheetMapping {
-  /** Имя листа как в Excel */
-  sheet_name: string;
-  
-  /** Тип листа */
-  sheet_type: "bom_data" | "service" | "unknown";
-  
-  /** Номера строк-заголовков (1-based) */
-  header_rows: number[];
-  
-  /** Строка, с которой начинаются данные (1-based) */
-  data_start_row: number;
-  
-  /** Оценка количества строк данных */
-  total_data_rows_estimate: number;
-  
-  /** Описание колонок */
-  columns: {
-    part_no: ColumnMapping;
-    name_cn: ColumnMapping;
-    name_en: ColumnMapping;
-    qty: ColumnMapping;
-    config_columns: ConfigColumnMapping[];
-  };
-  
-  /** Описание layout'а листа */
-  layout: {
-    type: "single_table" | "multi_block" | "service_sheet";
-    description: string;
-    /** Для multi_block: описание каждого блока */
-    blocks?: Array<{
-      part_no_col: number;
-      name_col: number;
-      qty_col: number;
-      start_col: number;
-      end_col: number;
-    }>;
-  };
-}
-```
-
-### 5.3. Cards Structure
-
-```typescript
-interface CardsStructure {
-  /** Форматы карт, сгруппированные по format_group */
-  formats: Record<string, CardFormatMapping>;
-  
-  /** Правила классификации файлов в архиве */
-  file_classification_rules: {
-    operational_card_patterns: ClassificationPattern[];
-    service_file_patterns: ClassificationPattern[];
-  };
-}
-
-interface CardFormatMapping {
-  /** Тип структуры карт */
-  structure_type: "standard_table" | "graphic_number" | "inspection" | "unknown";
-  
-  /** Человекочитаемое описание */
-  description: string;
-  
-  /** Откуда извлекать номер карты */
-  card_number_source: "filename" | "sheet_content" | "header" | "cell";
-  
-  /** Паттерн номера карты (регулярное выражение) */
-  card_number_pattern: string;
-  
-  /** Уверенность в определении номера карты */
-  card_number_confidence: number;
-  
-  /** Типовое описание листов карты для этого формата */
-  sheets: CardSheetMapping[];
-}
-
-interface CardSheetMapping {
-  /** Имя листа (null = любой лист, применимо ко всем) */
-  sheet_name: string | null;
-  
-  /** Тип листа */
-  sheet_type: "card_data" | "service" | "unknown";
-  
-  /** Номера строк-заголовков */
-  header_rows: number[];
-  
-  /** Строка начала данных */
-  data_start_row: number;
-  
-  /** Описание колонок */
-  columns: {
-    part_no: ColumnMapping;
-    name_cn: ColumnMapping;
-    name_en?: ColumnMapping;
-    qty: ColumnMapping;
-  };
-  
-  /** Как определять границы таблицы */
-  table_boundaries: {
-    type: "end_markers" | "empty_rows" | "next_header" | "fixed_count" | "multi_card";
-    markers?: string[];
-    empty_rows_threshold?: number;
-    fixed_count?: number;
-
-    /** Конфигурация для multi_card: один лист содержит несколько карт вертикально */
-    multi_card?: {
-      /** Тип разделителя между картами */
-      separator_type: "empty_row" | "marker" | "empty_row_or_marker";
-
-      /** Сколько пустых строк подряд считаются разделителем между картами (по умолчанию 1) */
-      empty_rows_separator?: number;
-
-      /** Маркеры, которые обозначают конец карты */
-      card_end_markers?: string[];
-
-      /** Есть ли у каждой карты свой заголовок (header) */
-      has_repeating_header: boolean;
-
-      /** Строка, где начинается таблица деталей внутри карты (относительная от начала карты, 1-based) */
-      parts_header_row?: number;
-
-      /** Строка, где начинаются данные деталей внутри карты (относительная от начала карты, 1-based) */
-      parts_data_start_row?: number;
-
-      /** Максимальное количество карт (0 = не ограничено) */
-      max_cards?: number;
-    };
-  };
-}
-```
-
-### 5.4. Общие типы
-
-```typescript
-interface ColumnMapping {
-  /** 1-based номер колонки (0 = не найдена) */
-  col_index: number;
-  /** Текст заголовка (null если заголовка нет) */
-  header: string | null;
-  /** Уверенность 0.0 - 1.0 */
-  confidence: number;
-}
-
-interface ConfigColumnMapping extends ColumnMapping {
-  /** Тип колонки комплектации */
-  type: "config" | "vin_split";
-}
-
-interface ClassificationPattern {
-  /** Тип паттерна */
-  type: "filename_regex" | "filename_keyword" | "sheet_keyword";
-  /** Значение паттерна (для filename_regex) */
-  pattern?: string;
-  /** Ключевые слова (для filename_keyword / sheet_keyword) */
-  keywords?: string[];
-  /** Имя группы формата при совпадении (только для operational_card_patterns) */
-  format_group?: string;
-}
-
-interface FieldMapping {
-  /** Ключ в bom.sheets[].columns */
-  bom_column: string;
-  /** Ключ в cards.sheets[].columns */
-  card_column: string;
-  /** Тип сопоставления */
-  match_type: "exact" | "fuzzy" | "regex";
-  /** Уверенность */
-  confidence: number;
-}
-```
+*(Структура mapping_config полностью соответствует описанной в разделах 5.1–5.4 оригинального черновика. Изменения не требуются.)*
 
 ---
 
@@ -846,90 +598,85 @@ interface FieldMapping {
 
 ---
 
-## 7. Изменения в бэкенде
+## 7. Фактические компоненты бэкенда
 
-### 7.1. Новый файл: `app/services/snapshot_service.py`
+### 7.1. `app/services/snapshot_service.py`
 
-Сервис для извлечения JSON-слепков из Excel-файлов через openpyxl.
-
-**Группировка по форматам:** Бэкенд ищет все BOM-файлы (`BOM*.xlsx`) и все операционные карты в ZIP-архиве, группирует их по формату (по шаблону/маске имени файла) и вызывает `extract_snapshot` для representative-файла каждой группы. Размер слепка — 300 строк с каждого листа.
+Сервис для извлечения JSON-слепков из Excel-файлов через openpyxl (read_only).
 
 ```python
 class SnapshotService:
-    """Извлекает JSON-слепки из Excel-файлов для отправки в ML-сервис."""
+    @staticmethod
+    def extract_snapshot_from_bytes(
+        data: bytes, filename: str, max_rows: int = 300, max_cols: int = 200
+    ) -> dict: ...
     
     @staticmethod
-    def extract_snapshot(file_path: str, max_rows: int = 300) -> dict:
-        """Открыть .xlsx через openpyxl, извлечь первые N строк каждого листа."""
-        ...
-    
-    @staticmethod
-    def extract_snapshot_from_bytes(data: bytes, filename: str, max_rows: int = 300) -> dict:
-        """То же самое, но из байтового потока (для карт из ZIP)."""
-        ...
-    
-    @staticmethod
-    def group_by_format(file_paths: list[str]) -> dict[str, list[str]]:
-        """Сгруппировать файлы по формату (по шаблону имени).
-        Возвращает словарь {format_group_name: [file_paths]}."""
-        ...
+    def group_by_format(file_paths: list[str]) -> dict[str, list[str]]: ...
 ```
 
-### 7.2. Новый файл: `app/services/structure_adapter.py`
+### 7.2. `app/services/structure_adapter.py`
 
-HTTP-клиент для ML-сервиса анализа структуры.
+**Синхронный** HTTP-клиент для ML-сервиса с Circuit Breaker.
 
 ```python
 class StructureAdapter:
-    """HTTP-клиент для ML-сервиса анализа структуры Excel."""
+    """Синхронный HTTP-клиент для ML-сервиса с Circuit Breaker."""
     
-    def __init__(self, ml_service_url: str):
-        self.base_url = ml_service_url
-        self.client = httpx.AsyncClient(timeout=60.0)
+    def __init__(self, base_url: str, timeout: float = 300.0):
+        self._client = httpx.Client(base_url=base_url, timeout=timeout)
+        self._circuit_breaker = _CircuitBreaker()
     
-    async def analyze_structure(
-        self,
-        bom_snapshots: list[dict],      # несколько BOM разных форматов
-        card_snapshots: list[dict],     # несколько операционных карт разных форматов
-        options: dict | None = None,
-    ) -> dict:
-        """Отправить JSON-слепки в ML-сервис и получить mapping_config."""
+    def analyze_structure(self, payload: dict) -> dict:
+        """POST /api/v1/analyze-structure — синхронно."""
+        ...
+    
+    def translate_batch(self, texts: list[str]) -> list[str]:
+        """POST /api/v1/translate — синхронный batch-перевод."""
         ...
 ```
 
-### 7.3. Изменения в `app/worker/tasks/analyze_mapping.py`
+**Ключевые отличия от черновика:**
+- Использует `httpx.Client` (синхронный), а не `httpx.AsyncClient`
+- Методы синхронные, без `async`
+- Добавлен `_CircuitBreaker`: 5 failures → 60s cooldown
+- Добавлен `translate_batch` для перевода
+- Добавлен `ManualResponseNeededError` при разомкнутом circuit breaker
 
-- Использовать `SnapshotService` для извлечения JSON-слепков
-- **Группировать BOM-файлы и операционные карты по форматам** перед отправкой в ML
-- **Размер слепка — 300 строк** с каждого листа (параметр `max_rows=300`)
-- Использовать `StructureAdapter` для вызова ML
-- Graceful degradation: ошибка ML → статус `error`
-- Сохранять mapping_config через `repository.update_mapping_config()`
+### 7.3. `app/worker/tasks/analyze_mapping.py`
 
-### 7.4. Новый файл: `app/services/card_parser_service.py`
+- Использует `snapshot_service.extract_snapshot_from_bytes()` для извлечения JSON-слепков
+- Группирует карты по форматам через `group_by_format()`
+- Размер слепка — 300 строк, макс 200 колонок
+- Использует `StructureAdapter` (синхронный) для вызова ML
+- Circuit Breaker: ошибка ML → `ManualResponseNeededError` → статус `error`
+- Сохраняет mapping_config через `sync_repository.update_job_status()`
 
-Новый парсер для операционных карт, который:
-- Принимает `mapping_config` и путь к карте в ZIP
+### 7.4. `app/services/card_parser_service.py`
+
+ML-управляемый парсер операционных карт:
+- Принимает `mapping_config` и данные карты (bytes)
 - Классифицирует файл по правилам из mapping_config
 - Находит таблицу деталей по координатам из mapping_config
 - Определяет границы таблицы (по маркерам / пустым строкам)
+- Поддерживает multi-card листы (один файл → несколько карт)
 - Извлекает номер карты
 
-### 7.5. Изменения в `app/worker/tasks/process_card.py`
+### 7.5. `app/worker/tasks/process_card.py`
 
-- Использовать `card_parser_service.py` вместо старого `burlak_parser`
-- Читать mapping_config из БД
-- Передавать mapping_config в парсер
+- Использует `CardProcessingService` (не напрямую `CardParserService`)
+- `CardProcessingService` координирует: чтение из ZIP → парсинг → перевод → сохранение
+- Читает mapping_config из БД через `sync_repository.get_mapping_config()`
 
 ### 7.6. Конфигурация (`app/core/config.py`)
 
 ```python
-ml_structure_url: str = "http://ml-structure-service:8000"
+ml_service_url: str = "http://ml-structure-service:8000"  # ML_SERVICE_URL
 ```
 
 ---
 
-## 8. Диаграмма последовательности
+## 8. Диаграмма последовательности (фактическая)
 
 ```mermaid
 sequenceDiagram
@@ -940,23 +687,23 @@ sequenceDiagram
     
     Note over W: analyze_mapping task
     
-    W->>SS: find all BOM*.xlsx files
-    W->>W: group BOMs by format
-    W->>W: extract JSON snapshot (300 rows) for each format
+    W->>DB: get_job_files(job_id)
+    W->>SS: read BOM.xlsx
+    W->>W: extract_snapshot_from_bytes (300 rows, 200 cols)
     
-    W->>SS: find all operational cards in ZIP
+    W->>SS: open archive.zip (zipfile.ZipFile)
     W->>W: group cards by format
-    W->>W: extract JSON snapshot (300 rows) for each format
+    W->>W: extract_snapshot_from_bytes for each format
     
-    W->>ML: POST /api/v1/analyze-structure
-    Note over W,ML: JSON snapshots of all BOM formats + all card formats (300 rows each)
+    W->>ML: POST /api/v1/analyze-structure (sync)
+    Note over W,ML: JSON snapshots of BOM + card formats
     
     alt ML available
         ML-->>W: 200 OK + mapping_config
-        W->>DB: UPDATE jobs SET mapping_config = ...
-    else ML error or timeout
+        W->>DB: UPDATE jobs SET mapping_config
+    else Circuit Breaker open
         W->>DB: UPDATE jobs SET status = error
-        Note over W: Job fails with ML_SERVICE_ERROR
+        Note over W: ManualResponseNeededError
     end
     
     W->>DB: UPDATE jobs SET stage = processing_cards
@@ -965,43 +712,27 @@ sequenceDiagram
     Note over W: process_card task
     
     W->>DB: read mapping_config
-    W->>SS: read card from ZIP streaming
+    W->>SS: zf.read(card_path) → bytes
     
-    W->>W: classify file using mapping_config rules
+    W->>W: CardProcessingService.process_card()
+    Note over W: parse → translate_batch (sync) → save XLSX + JSON
     
-    alt operational card
-        W->>W: openpyxl.load_workbook
-        W->>W: find table using column coordinates
-        W->>W: find table boundaries using markers
-        W->>W: extract parts within boundaries
-        W->>W: extract card number from filename/content
-        W->>W: translate, write results
-    else service file
-        Note over W: skip, mark as service
-    else unknown
-        Note over W: skip, mark as failed
-    end
-    
-    W->>DB: increment_progress
+    W->>DB: increment_progress (BEGIN IMMEDIATE)
+    W->>Redis: PUBLISH job:{id}:progress (SSE)
 ```
 
 ---
 
-## 9. Вопросы для обсуждения
+## 9. История вопросов (решено)
 
-1. **Сколько sample-карт отправлять?** Бэкенд группирует все операционные карты по форматам и отправляет по одному representative-слепку каждого формата. Если карты имеют разную структуру — ML должен указать это в `warnings` и вернуть несколько вариантов `sheets` в `file_classification_rules`.
+Следующие вопросы были подняты на этапе проектирования и решены в финальной реализации:
 
-2. **Как быть с картами, структура которых отличается от типовой?** ML возвращает `file_classification_rules` с паттернами. Если карта не соответствует ни одному паттерну — парсер помечает её как `unknown` и пропускает (failed).
+1. **Сколько sample-карт отправлять?** Бэкенд группирует все операционные карты по форматам и отправляет по одному representative-слепку каждого формата. Реализовано в `analyze_mapping.py`.
 
-3. **Нужна ли версионность mapping_config?** Да, `metadata.analyzer_version` позволит отслеживать, какой версией ML был сгенерирован конфиг.
+2. **Как быть с картами, структура которых отличается от типовой?** ML возвращает `file_classification_rules` с паттернами. Если карта не соответствует ни одному паттерну — `CardParserService.classify()` возвращает `"unknown"`, и карта помечается как failed.
 
-4. **Как часто обновлять mapping_config?** Один раз на задачу (в `analyze_mapping`). Если ML-модель обновилась — только для новых задач.
+3. **Нужна ли версионность mapping_config?** Да, `metadata.analyzer_version` реализован в контракте.
 
-5. **Что если в архиве есть карты разных форматов?** ML должен определить это по sample-картам и вернуть несколько вариантов `sheets` в `cards.structure`. Парсер будет перебирать варианты, пока не найдёт подходящий.
+4. **Как часто обновлять mapping_config?** Один раз на задачу (в `analyze_mapping`). Реализовано.
 
-
-
-
-
-
-
+5. **Что если в архиве есть карты разных форматов?** ML определяет это по sample-картам и возвращает несколько вариантов в `cards.structure`. `CardParserService` перебирает форматы при классификации.

@@ -13,30 +13,43 @@
 ## 1. Общая схема потока
 
 ```mermaid
-flowchart LR
-    subgraph Upload ["1. Загрузка"]
-        A1[Vue Frontend] -->|чанки 20MB| A2[FastAPI]
-        A2 -->|сохранение| A3[(Shared Storage)]
-        A2 -->|создание задачи| A4[(SQLite)]
+graph TB
+    subgraph Upload["1. Загрузка"]
+        FE[Vue Frontend]
+        API[FastAPI]
+        STORAGE[(Shared Storage)]
+        DB[(SQLite)]
     end
 
-    subgraph Processing ["2. Обработка"]
-        A2 -->|unpack.delay| B1[Redis]
-        B1 -->|pull| B2[Celery Workers]
-        B2 -->|чтение| A3
-        B2 -->|increment_progress| A4
-        B2 -->|REST| B3[ML Service]
-        B2 -->|запись результатов| A3
+    subgraph Processing["2. Обработка"]
+        REDIS[Redis Broker]
+        CELERY[Celery Workers]
+        ML[ML Service]
+        SSE[SSE Stream]
     end
 
-    subgraph Results ["3. Результаты"]
-        B2 -->|aggregate.delay| B1
-        B2 -->|запись diff + zip| A3
-        B2 -->|финальный статус| A4
-        A1 -->|polling GET /jobs/id| A2
-        A1 -->|GET /results/*| A2
-        A2 -->|StreamingResponse| A1
+    subgraph Results["3. Результаты"]
+        RES_DB[(SQLite)]
+        RES_STORAGE[(Shared Storage)]
     end
+
+    FE -->|чанки 20MB| API
+    API -->|сохранение| STORAGE
+    API -->|создание задачи| DB
+
+    API -->|dispatch task| REDIS
+    REDIS -->|pull| CELERY
+    CELERY -->|чтение| STORAGE
+    CELERY -->|update / increment| DB
+    CELERY -->|REST | ML
+    CELERY -->|запись результатов| STORAGE
+    CELERY -->|Redis Pub/Sub| SSE
+
+    CELERY -->|aggregate / статус| RES_DB
+    CELERY -->|diff + zip| RES_STORAGE
+    FE -->|SSE / polling| API
+    FE -->|GET /results| API
+    API -->|StreamingResponse| FE
 ```
 
 ---
@@ -49,12 +62,17 @@ flowchart LR
 Frontend                    FastAPI                     SQLite
    │                          │                          │
    │  POST /api/v1/jobs       │                          │
+   │  { "mode": "heuristic" } │                          │
+   │  (или "ml")              │                          │
    │─────────────────────────>│                          │
    │                          │  INSERT INTO jobs        │
+   │                          │  (mode, status:          │
+   │                          │   awaiting_upload)       │
    │                          │─────────────────────────>│
-   │                          │  status: awaiting_upload │
    │                          │<─────────────────────────│
-   │  201 { id, status }      │                          │
+   │  201 { id, mode,         │                          │
+   │        status,           │                          │
+   │        session_token }   │                          │
    │<─────────────────────────│                          │
 ```
 
@@ -93,6 +111,8 @@ Frontend                    FastAPI                 Shared Storage
 Frontend                    FastAPI                     SQLite
    │                          │                          │
    │  POST /jobs/{id}/start   │                          │
+   │  { "selected_configs":   │                          │
+   │    ["V31", "V32"] }      │                          │
    │─────────────────────────>│                          │
    │                          │  verify bom_uploaded     │
    │                          │  verify archive_uploaded │
@@ -100,20 +120,70 @@ Frontend                    FastAPI                     SQLite
    │                          │  UPDATE jobs             │
    │                          │  SET status=processing   │
    │                          │  SET stage=unpacking     │
+   │                          │  (или extracting_cards   │
+   │                          │   для heuristic)         │
    │                          │─────────────────────────>│
    │                          │                          │
-   │                          │  unpack.delay(job_id)    │
+   │                          │  dispatch_processing:    │
+   │                          │  mode=heuristic →        │
+   │                          │    process_heuristic.delay│
+   │                          │  mode=ml →               │
+   │                          │    unpack.delay           │
    │                          │─────────────────────────>│
    │                          │              (Redis)     │
    │  202 Accepted            │                          │
    │<─────────────────────────│                          │
 ```
 
+**Опционально:** перед `/start` фронтенд может вызвать `POST /jobs/{id}/parse-bom` для получения списка доступных конфигураций BOM и передать выбранные в `selected_configs`.
+
 ---
 
 ## 3. Этап 2: Обработка
 
-### 3.1. Распаковка архива (Unpack Task)
+### 3.0. Эвристический режим (Heuristic Task)
+
+В режиме `mode="heuristic"` (по умолчанию) весь пайплайн выполняется в рамках одной Celery-задачи [`process_heuristic`](../app/worker/tasks/process_heuristic.py:62) без обращения к внешнему ML-сервису.
+
+```
+Celery Worker               Shared Storage              SQLite
+   │                              │                        │
+   │  process_heuristic(job_id)   │                        │
+   │                              │                        │
+   │  UPDATE status=processing    │                        │
+   │  stage=extracting_cards      │                        │
+   │──────────────────────────────────────────────────────>│
+   │                              │                        │
+   │  extract archive → temp dir  │                        │
+   │─────────────────────────────>│                        │
+   │                              │                        │
+   │  burlak_parser:              │                        │
+   │  ┌─────────────────────┐     │                        │
+   │  │ splitter → card_    │     │                        │
+   │  │ parser → comparator │     │                        │
+   │  │ → report_generator  │     │                        │
+   │  └─────────────────────┘     │                        │
+   │                              │                        │
+   │  write diff.xlsx             │                        │
+   │─────────────────────────────>│                        │
+   │                              │                        │
+   │  write translated_cards.zip  │                        │
+   │─────────────────────────────>│                        │
+   │                              │                        │
+   │  UPDATE status=done/error    │                        │
+   │──────────────────────────────────────────────────────>│
+```
+
+**Ключевые отличия от ML-режима:**
+- Не требует загрузки BOM (работает только с архивом карт)
+- Не использует Celery chain (одна задача от начала до конца)
+- Не вызывает внешний ML-сервис
+- Прогресс публикуется через `_card_progress` / `_split_progress` callback'и
+- Использует `ProcessPoolExecutor` для параллельной обработки карт
+
+---
+
+### 3.1. Распаковка архива (Unpack Task — только ML-режим)
 
 ```
 Celery Worker               Shared Storage              SQLite
@@ -136,7 +206,7 @@ Celery Worker               Shared Storage              SQLite
    │                   (Redis)    │                        │
 ```
 
-### 3.2. Анализ структуры (Analyze Mapping Task)
+### 3.2. Анализ структуры (Analyze Mapping Task — только ML-режим)
 
 ```
 Celery Worker           Shared Storage          ML Service              SQLite
@@ -146,10 +216,13 @@ Celery Worker           Shared Storage          ML Service              SQLite
    │  read BOM.xlsx           │                      │                    │
    │─────────────────────────>│                      │                    │
    │  read sample cards       │                      │                    │
+   │  (через zf.read())       │                      │                    │
    │─────────────────────────>│                      │                    │
    │                          │                      │                    │
    │  extract JSON snapshot   │                      │                    │
-   │  (первые 20 строк)       │                      │                    │
+   │  (300 строк, макс 200    │                      │                    │
+   │   колонок, в памяти      │                      │                    │
+   │   через io.BytesIO)      │                      │                    │
    │                          │                      │                    │
    │  POST /analyze           │                      │                    │
    │────────────────────────────────────────────────>│                    │
@@ -167,7 +240,7 @@ Celery Worker           Shared Storage          ML Service              SQLite
    │              (Redis)     │                      │                    │
 ```
 
-### 3.3. Обработка карт (Process Card Task)
+### 3.3. Обработка карт (Process Card Task — только ML-режим)
 
 Выполняется параллельно на N воркерах.
 
@@ -176,25 +249,28 @@ Celery Worker N           Shared Storage          ML Service              SQLite
    │                              │                      │                    │
    │  process_card(id, path)      │                      │                    │
    │                              │                      │                    │
-   │  zipfile.open(card_path)     │                      │                    │
+   │  zf.read(card_path)          │                      │                    │
    │─────────────────────────────>│                      │                    │
-   │  stream XLSX bytes           │                      │                    │
+   │  XLSX bytes (in-memory)      │                      │                    │
    │<─────────────────────────────│                      │                    │
    │                              │                      │                    │
    │  parse card using            │                      │                    │
    │  mapping_config              │                      │                    │
+   │  (CardParserService)         │                      │                    │
    │                              │                      │                    │
    │  extract unique strings      │                      │                    │
    │                              │                      │                    │
-   │  POST /translate             │                      │                    │
+   │  translate_batch (sync)      │                      │                    │
    │────────────────────────────────────────────────────>│                    │
    │  translated strings          │                      │                    │
    │<────────────────────────────────────────────────────│                    │
    │                              │                      │                    │
-   │  write card_XX_translated    │                      │                    │
+   │  write translated_cards/     │                      │                    │
+   │  {safe_name}/ (XLSX)         │                      │                    │
    │─────────────────────────────>│                      │                    │
    │                              │                      │                    │
-   │  write card_XX_materials     │                      │                    │
+   │  write card_materials/       │                      │                    │
+   │  {safe_name}.json            │                      │                    │
    │─────────────────────────────>│                      │                    │
    │                              │                      │                    │
    │  BEGIN IMMEDIATE             │                      │                    │
@@ -240,27 +316,34 @@ def increment_progress(job_id, card_path, *, success, error_message=None):
 
 ## 4. Этап 3: Агрегация и результаты
 
-### 4.1. Финальная сверка (Aggregate Task)
+### 4.1. Финальная сверка (Aggregate Task — только ML-режим)
 
 ```
 Celery Worker           Shared Storage              SQLite
    │                              │                    │
    │  aggregate(job_id)           │                    │
    │                              │                    │
+   │  UPDATE stage=aggregating    │                    │
+   │──────────────────────────────────────────────────>│
+   │                              │                    │
    │  read BOM.xlsx               │                    │
+   │  (bom_parser_service)        │                    │
    │─────────────────────────────>│                    │
    │                              │                    │
-   │  read all card_*_materials   │                    │
+   │  read all card_materials/    │                    │
+   │  *.json                      │                    │
    │─────────────────────────────>│                    │
    │                              │                    │
    │  compare BOM vs materials    │                    │
-   │  (join/merge)                │                    │
+   │  (comparator_service)        │                    │
    │                              │                    │
    │  generate diff.xlsx          │                    │
+   │  (report_service)            │                    │
    │─────────────────────────────>│                    │
    │                              │                    │
-   │  package translated_cards.zip│                    │
+   │  package.delay(job_id)       │                    │
    │─────────────────────────────>│                    │
+   │                   (Redis)    │                    │
    │                              │                    │
    │  if failed > 0:              │                    │
    │    UPDATE status = error     │                    │
@@ -269,7 +352,76 @@ Celery Worker           Shared Storage              SQLite
    │──────────────────────────────────────────────────>│
 ```
 
-### 4.2. Поллинг статуса
+### 4.2. Упаковка результатов (Package Task — только ML-режим)
+
+```
+Celery Worker           Shared Storage              SQLite
+   │                              │                    │
+   │  package(job_id)             │                    │
+   │                              │                    │
+   │  UPDATE stage=packaging      │                    │
+   │──────────────────────────────────────────────────>│
+   │                              │                    │
+   │  read translated_cards/      │                    │
+   │─────────────────────────────>│                    │
+   │                              │                    │
+   │  create translated_cards.zip │                    │
+   │─────────────────────────────>│                    │
+   │                              │                    │
+   │  cleanup temp dir            │                    │
+   │─────────────────────────────>│                    │
+   │                              │                    │
+   │  UPDATE status=done          │                    │
+   │──────────────────────────────────────────────────>│
+```
+
+### 4.3. SSE-стрим прогресса (Real-time)
+
+Фронтенд подписывается на прогресс через Server-Sent Events:
+
+```
+Frontend                    FastAPI                     Redis
+   │                          │                          │
+   │  GET /jobs/{id}/stream   │                          │
+   │  ?token=<session_token>  │                          │
+   │─────────────────────────>│                          │
+   │                          │  SUBSCRIBE job:{id}      │
+   │                          │─────────────────────────>│
+   │                          │                          │
+   │                          │  ┌──────────────────────┐│
+   │                          │  │  Celery Worker        ││
+   │                          │  │  publish to           ││
+   │                          │  │  Redis Pub/Sub:       ││
+   │                          │  │  job:{id}:progress    ││
+   │                          │  └──────────────────────┘│
+   │                          │                          │
+   │  event: progress         │                          │
+   │  data: {"processed": 5,  │                          │
+   │         "failed": 0,     │                          │
+   │         "total": 100,    │                          │
+   │         "stage": "cards" }                          │
+   │<─────────────────────────│                          │
+   │                          │                          │
+   │  event: progress         │                          │
+   │  data: {"processed": 10, │                          │
+   │         "failed": 1,     │                          │
+   │         "total": 100 }   │                          │
+   │<─────────────────────────│                          │
+   │                          │                          │
+   │  event: complete         │                          │
+   │  data: {"status": "done" │                          │
+   │         "stage": "done"} │                          │
+   │<─────────────────────────│                          │
+```
+
+**Механизм:**
+1. [`_publish_progress`](../app/db/sync_repository.py:38) вызывается после каждого `increment_progress`
+2. Публикует JSON в Redis Pub/Sub на канал `job:{id}:progress`
+3. FastAPI SSE-endpoint [`GET /jobs/{id}/stream`](../app/api/v1/jobs.py:97) подписывается на этот канал
+4. Токен аутентификации (`session_token`) передаётся как query-параметр
+5. Дополнительно используется Redis cache-aside (TTL 5 сек) для быстрого GET /jobs/{id}
+
+### 4.4. Поллинг статуса
 
 ```
 Frontend                    FastAPI                     SQLite
@@ -278,6 +430,7 @@ Frontend                    FastAPI                     SQLite
    │  (каждые 2-3 сек)        │                          │
    │─────────────────────────>│                          │
    │                          │  SELECT * FROM jobs      │
+   │                          │  (или Redis cache)       │
    │                          │─────────────────────────>│
    │                          │<─────────────────────────│
    │  200 { status, stage,    │                          │
@@ -285,7 +438,7 @@ Frontend                    FastAPI                     SQLite
    │<─────────────────────────│                          │
 ```
 
-### 4.3. Скачивание результатов
+### 4.5. Скачивание результатов
 
 ```
 Frontend                    FastAPI                 Shared Storage
@@ -315,7 +468,7 @@ Frontend                    FastAPI                 Shared Storage
 | Задача (job) | FastAPI | SQLite `jobs` | Row |
 | Карты (cards) | Unpack Task | SQLite `cards` | Row |
 | mapping_config | Analyze Mapping Task | SQLite `jobs.mapping_config` | JSON |
-| Материалы карты | Process Card Task | `{storage}/{job}/cards/card_{n}_materials.json` | JSON |
-| Переведённая карта | Process Card Task | `{storage}/{job}/cards/card_{n}_translated.xlsx` | XLSX |
+| Материалы карты | Process Card Task | `{storage}/{job}/card_materials/{safe_name}.json` | JSON |
+| Переведённая карта | Process Card Task | `{storage}/{job}/translated_cards/{safe_name}/` | XLSX (директория) |
 | diff.xlsx | Aggregate Task | `{storage}/{job}/diff.xlsx` | XLSX |
 | translated_cards.zip | Package Task | `{storage}/{job}/translated_cards.zip` | ZIP |

@@ -49,6 +49,11 @@ classDiagram
         +status_code = 409
     }
     
+    class JobForbiddenError {
+        +code = "JOB_FORBIDDEN"
+        +status_code = 403
+    }
+    
     class FileUploadError {
         +code = "FILE_UPLOAD_ERROR"
         +status_code = 422
@@ -68,13 +73,20 @@ classDiagram
         +code = "STORAGE_ERROR"
         +status_code = 500
     }
+    
+    class JobCreationError {
+        +code = "JOB_CREATION_ERROR"
+        +status_code = 500
+    }
 
     BurlakError <|-- JobNotFoundError
     BurlakError <|-- JobStateError
+    BurlakError <|-- JobForbiddenError
     BurlakError <|-- FileUploadError
     BurlakError <|-- ChunkCorruptedError
     BurlakError <|-- ResultsNotReadyError
     BurlakError <|-- StorageError
+    BurlakError <|-- JobCreationError
     FileUploadError <|-- ChunkCorruptedError
 ```
 
@@ -86,10 +98,12 @@ classDiagram
 |---|---|---|---|
 | `JOB_NOT_FOUND` | 404 | `JobNotFoundError` | Запрос задачи по несуществующему ID |
 | `INVALID_JOB_STATE` | 409 | `JobStateError` | Операция недопустима в текущем статусе (например, `/start` для уже обрабатываемой задачи) |
+| `JOB_FORBIDDEN` | 403 | `JobForbiddenError` | Доступ к задаче запрещён (неверный session_token) |
 | `RESULTS_NOT_READY` | 409 | `ResultsNotReadyError` | Попытка скачать результаты до завершения обработки |
 | `FILE_UPLOAD_ERROR` | 422 | `FileUploadError` | Неверный `role` (не `bom`/`archive`), отсутствуют обязательные заголовки |
 | `CHUNK_CORRUPTED` | 422 | `ChunkCorruptedError` | Размер повторно отправленного чанка не совпадает с сохранённым |
 | `STORAGE_ERROR` | 500 | `StorageError` | Ошибка дисковых операций (запись/чтение/сборка) |
+| `JOB_CREATION_ERROR` | 500 | `JobCreationError` | Ошибка создания задачи в БД |
 | `INTERNAL_ERROR` | 500 | `BurlakError` (базовый) | Непредвиденная ошибка |
 
 ---
@@ -170,6 +184,19 @@ async def burlak_error_handler(request: Request, exc: BurlakError) -> JSONRespon
     "error": {
         "code": "RESULTS_NOT_READY",
         "message": "Results for job 42 are not ready yet. Current status: 'processing'",
+        "detail": null
+    }
+}
+```
+
+### POST `/api/v1/jobs/{id}/cancel` — доступ запрещён
+
+```json
+// HTTP 403
+{
+    "error": {
+        "code": "JOB_FORBIDDEN",
+        "message": "Invalid session token for job 42",
         "detail": null
     }
 }

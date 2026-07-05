@@ -22,14 +22,26 @@ POST /api/v1/jobs
 Content-Type: application/json
 ```
 
-Тело запроса не требуется.
+Тело запроса (опционально):
+
+```json
+{
+    "mode": "heuristic"
+}
+```
+
+| Поле | Тип | По умолчанию | Описание |
+|---|---|---|---|
+| `mode` | `string` | `"heuristic"` | Режим обработки: `"heuristic"` или `"ml"` |
 
 ### Response — `201 Created`
 
 ```json
 {
     "id": 42,
+    "mode": "heuristic",
     "status": "awaiting_upload",
+    "session_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "created_at": "2026-06-22T12:00:00"
 }
 ```
@@ -55,6 +67,7 @@ GET /api/v1/jobs/42
 ```json
 {
     "id": 42,
+    "mode": "ml",
     "status": "processing",
     "stage": "processing_cards",
     "total": 1000,
@@ -75,16 +88,19 @@ GET /api/v1/jobs/42
 | `processing` | Идёт обработка (смотри `stage`) |
 | `done` | Успешно завершено |
 | `error` | Завершено с ошибками |
+| `cancelled` | Отменено пользователем |
 
 ### Поля стадии (когда `status = processing`)
 
-| Стадия | Описание |
-|---|---|
-| `unpacking` | Распаковка архива |
-| `analyzing_mapping` | Определение структуры через ML |
-| `processing_cards` | Обработка карт |
-| `aggregating` | Финальная сверка |
-| `packaging` | Упаковка результатов |
+| Стадия | Режим | Описание |
+|---|---|---|
+| `unpacking` | ML | Распаковка архива |
+| `analyzing_mapping` | ML | Определение структуры через ML |
+| `processing_cards` | ML + Heuristic | Обработка карт |
+| `aggregating` | ML | Финальная сверка |
+| `packaging` | ML | Упаковка результатов |
+| `extracting_cards` | Heuristic | Распаковка архива во временную директорию |
+| `generating_report` | Heuristic | Генерация отчёта |
 
 ### Errors
 
@@ -94,7 +110,38 @@ GET /api/v1/jobs/42
 
 ---
 
-## 3. POST `/api/v1/jobs/{job_id}/start` — Запустить обработку
+## 3. POST `/api/v1/jobs/{job_id}/parse-bom` — Разобрать BOM
+
+Парсит загруженный BOM-файл и возвращает список доступных конфигураций. Опциональный шаг перед `/start`.
+
+### Request
+
+```
+POST /api/v1/jobs/42/parse-bom
+Content-Type: application/json
+```
+
+Тело запроса не требуется.
+
+### Response — `200 OK`
+
+```json
+{
+    "configs": ["V31", "V32", "V33"]
+}
+```
+
+### Errors
+
+| Код | HTTP | Условие |
+|---|---|---|
+| `JOB_NOT_FOUND` | 404 | Задача не найдена |
+| `INVALID_JOB_STATE` | 409 | Статус не `awaiting_upload` |
+| `FILE_UPLOAD_ERROR` | 422 | BOM не загружен |
+
+---
+
+## 4. POST `/api/v1/jobs/{job_id}/start` — Запустить обработку
 
 ### Request
 
@@ -103,7 +150,17 @@ POST /api/v1/jobs/42/start
 Content-Type: application/json
 ```
 
-Тело запроса не требуется.
+Тело запроса (опционально, для ML-режима):
+
+```json
+{
+    "selected_configs": ["V31", "V32"]
+}
+```
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `selected_configs` | `string[]` | Список выбранных конфигураций BOM (опционально) |
 
 ### Response — `202 Accepted`
 
@@ -115,6 +172,8 @@ Content-Type: application/json
 }
 ```
 
+Для heuristic-режима `stage` будет `extracting_cards`.
+
 ### Errors
 
 | Код | HTTP | Условие |
@@ -125,7 +184,7 @@ Content-Type: application/json
 
 ---
 
-## 4. PUT `/api/v1/jobs/{job_id}/files/{role}/chunks/{n}` — Загрузить чанк
+## 5. PUT `/api/v1/jobs/{job_id}/files/{role}/chunks/{n}` — Загрузить чанк
 
 Загружает один чанк файла. Поддерживает идемпотентность — повторная отправка того же чанка возвращает `200 OK`.
 
@@ -175,7 +234,7 @@ X-Total-Chunks: 5
 
 ---
 
-## 5. POST `/api/v1/jobs/{job_id}/files/{role}/complete` — Подтвердить загрузку
+## 6. POST `/api/v1/jobs/{job_id}/files/{role}/complete` — Подтвердить загрузку
 
 Склеивает все чанки в итоговый файл и обновляет статус загрузки.
 
@@ -208,7 +267,77 @@ Content-Type: application/json
 
 ---
 
-## 6. GET `/api/v1/jobs/{job_id}/results/diff` — Скачать таблицу расхождений
+## 7. GET `/api/v1/jobs/{job_id}/stream` — SSE-стрим прогресса
+
+Подписка на real-time прогресс обработки через Server-Sent Events.
+
+### Request
+
+```
+GET /api/v1/jobs/42/stream?token=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+### Query Parameters
+
+| Параметр | Тип | Обязательный | Описание |
+|---|---|---|---|
+| `token` | string | Да | `session_token` из ответа создания задачи |
+
+### Response — `200 OK`
+
+```
+Content-Type: text/event-stream
+
+event: progress
+data: {"processed":5,"failed":0,"total":100,"stage":"processing_cards"}
+
+event: progress
+data: {"processed":10,"failed":1,"total":100}
+
+event: complete
+data: {"status":"done","stage":"done"}
+```
+
+### Errors
+
+| Код | HTTP | Условие |
+|---|---|---|
+| `JOB_NOT_FOUND` | 404 | Задача не найдена |
+| `INVALID_JOB_STATE` | 401 | Неверный token |
+
+---
+
+## 8. POST `/api/v1/jobs/{job_id}/cancel` — Отменить задачу
+
+Отменяет выполняющуюся задачу.
+
+### Request
+
+```
+POST /api/v1/jobs/42/cancel
+Content-Type: application/json
+```
+
+Тело запроса не требуется.
+
+### Response — `200 OK`
+
+```json
+{
+    "status": "cancelled"
+}
+```
+
+### Errors
+
+| Код | HTTP | Условие |
+|---|---|---|
+| `JOB_NOT_FOUND` | 404 | Задача не найдена |
+| `INVALID_JOB_STATE` | 409 | Статус не `processing` |
+
+---
+
+## 9. GET `/api/v1/jobs/{job_id}/results/diff` — Скачать таблицу расхождений
 
 ### Request
 
@@ -235,7 +364,7 @@ Content-Disposition: attachment; filename="diff.xlsx"
 
 ---
 
-## 7. GET `/api/v1/jobs/{job_id}/results/cards` — Скачать переведённые карты
+## 10. GET `/api/v1/jobs/{job_id}/results/cards` — Скачать переведённые карты
 
 ### Request
 
@@ -262,7 +391,7 @@ Content-Disposition: attachment; filename="translated_cards.zip"
 
 ---
 
-## 8. GET `/api/v1/health` — Проверка состояния системы
+## 11. GET `/api/v1/health` — Проверка состояния системы
 
 ### Request
 
@@ -298,7 +427,7 @@ GET /api/v1/health
 
 ---
 
-## 9. Единый формат ошибки
+## 12. Единый формат ошибки
 
 Все ошибки возвращаются в едином формате:
 
