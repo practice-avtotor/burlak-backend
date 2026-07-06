@@ -901,11 +901,15 @@ class CardParserService:
                 if not pn_str:
                     continue
 
-                # Check for strikethrough
+                # Check for strikethrough in part_no or qty column
                 try:
-                    cell = ws.cell(row=row_idx, column=part_no_col)
-                    if cell and cell.font and cell.font.strike:
+                    cell_pn = ws.cell(row=row_idx, column=part_no_col)
+                    if cell_pn and cell_pn.font and cell_pn.font.strike:
                         continue
+                    if qty_col > 0:
+                        cell_qty = ws.cell(row=row_idx, column=qty_col)
+                        if cell_qty and cell_qty.font and cell_qty.font.strike:
+                            continue
                 except Exception:
                     pass
 
@@ -1064,11 +1068,15 @@ class CardParserService:
                 if not pn_str:
                     continue
 
-                # Check for strikethrough
+                # Check for strikethrough in part_no or qty column
                 try:
-                    cell = ws.cell(row=r, column=part_no_col)
-                    if cell and cell.font and cell.font.strike:
+                    cell_pn = ws.cell(row=r, column=part_no_col)
+                    if cell_pn and cell_pn.font and cell_pn.font.strike:
                         continue
+                    if qty_col > 0:
+                        cell_qty = ws.cell(row=r, column=qty_col)
+                        if cell_qty and cell_qty.font and cell_qty.font.strike:
+                            continue
                 except Exception:
                     pass
 
