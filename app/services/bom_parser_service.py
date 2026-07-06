@@ -628,12 +628,15 @@ def parse_bom(file_path: str, sheets_config: list[dict[str, Any]]) -> BOMData:
 
                 # ── Multi-block: read additional side-by-side blocks ──
                 if len(multi_blocks) > 1:
-                    for blk_pn, _blk_name, _blk_qty in multi_blocks[1:]:
+                    for blk_pn, _blk_name, blk_qty in multi_blocks[1:]:
                         blk_count = 0
+                        blk_strike_cols = [blk_pn]
+                        if blk_qty > 0:
+                            blk_strike_cols.append(blk_qty)
                         blk_strike_rows = HeuristicAnalyzer.get_strike_rows(
                             ws,
                             range(data_start, max_row + 1),
-                            [blk_pn],
+                            blk_strike_cols,
                         )
                         for row_idx in range(data_start, max_row + 1):
                             if row_idx in blk_strike_rows:
